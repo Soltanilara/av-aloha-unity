@@ -45,7 +45,11 @@ public class CameraStreamer : MonoBehaviour
             {
                 byte[] bytes;
                 if (!subSocket.TryReceiveFrameBytes(out bytes)) continue;
-                imageBytes = bytes;
+
+                lock (imageLock)
+                {
+                    imageBytes = bytes;
+                }
             }
             subSocket.Close();
         }
@@ -96,8 +100,12 @@ public class CameraStreamer : MonoBehaviour
         if (receivingImages && imageBytes != null) 
         {
             byte[] imageBytesCopy;
-            imageBytesCopy = new byte[imageBytes.Length];
-            imageBytes.CopyTo(imageBytesCopy, 0);
+            lock (imageLock)
+            {
+                imageBytesCopy = new byte[imageBytes.Length];
+                imageBytes.CopyTo(imageBytesCopy, 0);
+                imageBytes = null;
+            }
             texture.LoadImage(imageBytesCopy);
 
             if (imageWidth != texture.width || imageHeight != texture.height)
