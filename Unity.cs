@@ -13,6 +13,10 @@ public class PositionAndRotationSender : MonoBehaviour
     // UDP client socket
     private UdpClient client;
 
+    // Hand controllers
+    public Transform leftHandController;
+    public Transform rightHandController;
+
     // Start is called before the first frame update
     void Start()
     {
@@ -26,12 +30,18 @@ public class PositionAndRotationSender : MonoBehaviour
     // Update is called once per frame
     void Update()
     {
-        // Get the position and rotation of this GameObject
-        Vector3 position = transform.position;
-        Quaternion rotation = transform.rotation;
+        // Get the position and rotation of hand controllers
+        Vector3 leftHandPosition = leftHandController.position;
+        Quaternion leftHandRotation = leftHandController.rotation;
+
+        Vector3 rightHandPosition = rightHandController.position;
+        Quaternion rightHandRotation = rightHandController.rotation;
 
         // Convert position and rotation to string format
-        string data = $"Position:{position.x},{position.y},{position.z};Rotation:{rotation.eulerAngles.x},{rotation.eulerAngles.y},{rotation.eulerAngles.z}";
+        string data = $"LeftHandPosition:{leftHandPosition.x},{leftHandPosition.y},{leftHandPosition.z};" +
+                      $"LeftHandRotation:{leftHandRotation.eulerAngles.x},{leftHandRotation.eulerAngles.y},{leftHandRotation.eulerAngles.z};" +
+                      $"RightHandPosition:{rightHandPosition.x},{rightHandPosition.y},{rightHandPosition.z};" +
+                      $"RightHandRotation:{rightHandRotation.eulerAngles.x},{rightHandRotation.eulerAngles.y},{rightHandRotation.eulerAngles.z}";
 
         // Send the data to the server
         SendData(data);
@@ -63,24 +73,3 @@ public class PositionAndRotationSender : MonoBehaviour
         }
     }
 }
-
-
-
-/*
-using UnityEngine;
-
-public class PositionAndRotationPrinter : MonoBehaviour
-{
-    // Update is called once per frame
-    void Update()
-    {
-        // Get the position and rotation of this GameObject
-        Vector3 position = transform.position;
-        Quaternion rotation = transform.rotation;
-
-        // Print the position and rotation to the console
-        Debug.Log("Position: " + position);
-        Debug.Log("Rotation: " + rotation.eulerAngles);
-    }
-}
-*/
