@@ -21,7 +21,9 @@ public class CameraStreamer : MonoBehaviour
     private Texture2D leftTexture;
     private Texture2D rightTexture;
 
+
     private byte[] imageBytes;
+    private bool imageReady = false;
 
     private bool receivingImages = false;
     private int imageWidth;
@@ -41,14 +43,22 @@ public class CameraStreamer : MonoBehaviour
             subSocket.Options.ReceiveHighWatermark = 10;
             subSocket.Connect(robotAddress);
             subSocket.Subscribe("");
+            TimeSpan timeout = new TimeSpan(0, 0, 0, 0, 100);
             while (receivingImages)
             {
                 byte[] bytes;
-                if (!subSocket.TryReceiveFrameBytes(out bytes)) continue;
+                if (!subSocket.TryReceiveFrameBytes(timeout, out bytes)) continue;
+                
 
                 lock (imageLock)
                 {
-                    imageBytes = bytes;
+                    if (bytes.Length > imageBytes.Length)
+                    {
+                        imageBytes = new byte[bytes.Length];
+                    }
+                    bytes.CopyTo(imageBytes, 0);
+                    // imageBytes = bytes;
+                    imageReady = true;
                 }
             }
             subSocket.Close();
@@ -60,21 +70,7 @@ public class CameraStreamer : MonoBehaviour
     {
         robotAddress = address;
 
-        StopReceiving();
-
-        receivingImages = true;
-        subscriberThread = new Thread(SubscriberWork);
-        subscriberThread.Start();
-    }
-
-    public void StopReceiving()
-    {
-        // check if the thread is already running
-        if (subscriberThread != null)
-        {
-            receivingImages = false;
-            subscriberThread.Join();
-        }
+        
     }
 
 
@@ -88,25 +84,34 @@ public class CameraStreamer : MonoBehaviour
         leftImage.texture = leftTexture;
         rightImage.texture = rightTexture;
 
-        string address = "tcp://" + PlayerPrefs.GetString("IP") + ":" + PlayerPrefs.GetString("Port");
+        imageBytes = new byte[40000];
 
-        Debug.Log("Connecting to " + address);
+        robotAddress = "tcp://" + PlayerPrefs.GetString("IP") + ":" + PlayerPrefs.GetString("Port");
+        // address = "tcp://localhost:5555";
+        Debug.Log("Connecting to " + robotAddress);
 
-        StartReceiving(address);
+        receivingImages = true;
+        imageReady = false;
+        subscriberThread = new Thread(SubscriberWork);
+        subscriberThread.Start();
     }
 
     private void Update()
     {
-        if (receivingImages && imageBytes != null) 
+        if (imageReady) 
         {
-            byte[] imageBytesCopy;
             lock (imageLock)
             {
-                imageBytesCopy = new byte[imageBytes.Length];
-                imageBytes.CopyTo(imageBytesCopy, 0);
-                imageBytes = null;
+                // if (imageBytes.Length > imageBytesCopy.Length)
+                // {
+                //     imageBytesCopy = new byte[imageBytes.Length];
+                // }
+                // imageBytes.CopyTo(imageBytesCopy, 0);
+                texture.LoadImage(imageBytes);
+                imageReady = false;
             }
-            texture.LoadImage(imageBytesCopy);
+            
+            
 
             if (imageWidth != texture.width || imageHeight != texture.height)
             {
@@ -135,6 +140,7 @@ public class CameraStreamer : MonoBehaviour
 
     private void OnDestroy()
     {
-        StopReceiving();
+        receivingImages = false;
+        subscriberThread.Join();
     }
 }
