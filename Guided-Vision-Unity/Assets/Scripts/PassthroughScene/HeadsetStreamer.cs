@@ -2,8 +2,31 @@ using System.Collections;
 using System.Collections.Generic;
 using System.Threading;
 using UnityEngine;
-using NetMQ;
-using NetMQ.Sockets;
+using System.Net.Sockets;
+
+
+[System.Serializable]
+public class HeadsetData
+{
+    public Vector3 HPosition;
+    public Quaternion HRotation;
+    public Vector3 LPosition;
+    public Quaternion LRotation;
+    public Vector2 LThumbstick;
+    public float LIndexTrigger;
+    public float LHandTrigger;
+    public bool LButtonOne;
+    public bool LButtonTwo;
+    public bool LButtonThumbstick;
+    public Vector3 RPosition;
+    public Quaternion RRotation;
+    public Vector2 RThumbstick;
+    public float RIndexTrigger;
+    public float RHandTrigger;
+    public bool RButtonOne;
+    public bool RButtonTwo;
+    public bool RButtonThumbstick;
+}
 
 public class HeadsetStreamer : MonoBehaviour
 {
@@ -12,46 +35,44 @@ public class HeadsetStreamer : MonoBehaviour
     public Transform leftController;
     public Transform rightController;
     private HeadsetData headsetData;
-    private bool headsetDataReady = false;
-
+    private bool dataReady = false;
     private bool sendingData = false;
     private Thread publisherThread;
-
     private readonly object dataLock = new object();
+    private UdpClient udpClient;
+    private string ip;
+    private int port;
 
     private void PublisherWork()
     {
-        AsyncIO.ForceDotNet.Force();
-        using (var pubSocket = new PublisherSocket())
+        while (sendingData)
         {
-            pubSocket.Options.SendHighWatermark = 10;
-            pubSocket.Bind("tcp://*:5555");
-            while (sendingData)
+            if (dataReady)
             {
-                if (headsetDataReady)
+                HeadsetData data;
+                lock (dataLock)
                 {
-                    HeadsetData data;
-                    lock (dataLock)
-                    {
-                        data = headsetData;
-                        headsetDataReady = false;
-                    }
-                    string message = JsonUtility.ToJson(data);
-                    pubSocket.TrySendFrame(message);
+                    data = headsetData;
+                    dataReady = false;
                 }
-
-                Debug.Log("Sending data");
+                string message = JsonUtility.ToJson(data);
+                byte[] dataBytes = System.Text.Encoding.ASCII.GetBytes(message);
+                udpClient.SendAsync(dataBytes, dataBytes.Length, ip, port);
             }
-            pubSocket.Close();
         }
-        NetMQConfig.Cleanup();
     }
 
     // Start is called before the first frame update
     void Start()
     {
-        headsetData = new HeadsetData();
+        ip = PlayerPrefs.GetString("IP");
+        port = int.Parse(PlayerPrefs.GetString("Port"));
 
+        //ip = "127.0.0.1";
+        //port = 5555;
+
+        headsetData = new HeadsetData();
+        udpClient = new UdpClient();
         sendingData = true;
         publisherThread = new Thread(PublisherWork);
         publisherThread.Start();
@@ -60,11 +81,9 @@ public class HeadsetStreamer : MonoBehaviour
     // Update is called once per frame
     void Update()
     {
-        
-
         lock (dataLock)
         {
-            headsetDataReady = true;
+            dataReady = true;
             headsetData.HPosition = headset.position;
             headsetData.HRotation = headset.rotation;
             headsetData.LPosition = leftController.position;
@@ -88,9 +107,8 @@ public class HeadsetStreamer : MonoBehaviour
 
     private void OnDestroy()
     {   
-        if (publisherThread != null) {     
-            sendingData = false;
-            publisherThread.Join();
-        }
+        sendingData = false;
+        publisherThread.Abort();
+        udpClient.Close();
     }
 }

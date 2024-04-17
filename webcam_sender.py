@@ -10,7 +10,7 @@ def main():
     context = zmq.Context()
     socket = context.socket(zmq.PUB)
     socket.setsockopt(zmq.SNDHWM, 1)
-    socket.bind("tcp://192.168.1.83:5555")  # Change the address/port as needed
+    socket.bind("tcp://*:5555")  # Change the address/port as needed
 
     # Open the webcam
     cap = cv2.VideoCapture(0)
@@ -27,9 +27,6 @@ def main():
 
             # concat 2 frames into 1
             combined_frame = np.concatenate((frame, frame), axis=1)
-
-            # convert right half to black using shape
-            combined_frame[:, combined_frame.shape[1]//2:] = 0
 
             _, compressed_image = cv2.imencode('.jpg', combined_frame, [int(cv2.IMWRITE_WEBP_QUALITY), 10])
 

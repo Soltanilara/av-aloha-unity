@@ -14,7 +14,7 @@ def main() :
     context = zmq.Context()
     socket = context.socket(zmq.PUB)
     socket.setsockopt(zmq.SNDHWM, 1)
-    socket.bind("tcp://192.168.1.83:5555")  # Change the address/port as needed
+    socket.bind("tcp://*:5555")  # Change the address/port as needed
 
     # Create a ZED camera object
     zed = sl.Camera()
