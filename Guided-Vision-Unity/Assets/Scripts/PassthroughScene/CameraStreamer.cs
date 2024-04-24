@@ -12,18 +12,28 @@ using System;
 using UnityEngine.XR;
 using UnityEngine.UI;
 using System.Data.SqlTypes;
+using TMPro;
 
 public class CameraStreamer : MonoBehaviour
 {
     public RawImage leftImage;
     public RawImage rightImage;
+
+    // public text mesh pro 
+    public TextMeshProUGUI debugText1;
+    public TextMeshProUGUI debugText2;
+
     private Texture2D texture;
     private Texture2D leftTexture;
     private Texture2D rightTexture;
 
 
     private byte[] imageBytes;
+    
     private bool imageReady = false;
+
+    private double receivePeriod = 0.1f;
+    private readonly object receiveLock = new object();
 
     private bool receivingImages = false;
     private int imageWidth;
@@ -46,6 +56,11 @@ public class CameraStreamer : MonoBehaviour
             TimeSpan timeout = new TimeSpan(0, 0, 0, 0, 100);
             while (receivingImages)
             {
+                
+                // get csharp equiv of std::chrono::steady_clock::now()
+                // do not use Time.realtimeSinceStartup as it is not monotonic
+                var time = System.Diagnostics.Stopwatch.StartNew();
+
                 byte[] bytes;
                 if (!subSocket.TryReceiveFrameBytes(timeout, out bytes)) continue;
                 
@@ -59,7 +74,17 @@ public class CameraStreamer : MonoBehaviour
                     bytes.CopyTo(imageBytes, 0);
                     // imageBytes = bytes;
                     imageReady = true;
+
+                    
                 }
+
+                var period = time.Elapsed.TotalSeconds;
+                lock (receiveLock)
+                {
+                    receivePeriod = period;
+                }
+               
+
             }
             subSocket.Close();
         }
@@ -86,8 +111,8 @@ public class CameraStreamer : MonoBehaviour
 
         imageBytes = new byte[40000];
 
-        robotAddress = "tcp://" + PlayerPrefs.GetString("IP") + ":" + PlayerPrefs.GetString("Port");
-        // address = "tcp://localhost:5555";
+        // robotAddress = "tcp://" + PlayerPrefs.GetString("IP") + ":" + PlayerPrefs.GetString("Port");
+        robotAddress = "tcp://localhost:5555";
         Debug.Log("Connecting to " + robotAddress);
 
         receivingImages = true;
@@ -100,6 +125,8 @@ public class CameraStreamer : MonoBehaviour
     {
         if (imageReady) 
         {
+            var time = Time.realtimeSinceStartup;
+
             lock (imageLock)
             {
                 // if (imageBytes.Length > imageBytesCopy.Length)
@@ -135,7 +162,15 @@ public class CameraStreamer : MonoBehaviour
             // rightImage.texture = rightTexture;
             rightTexture.SetPixels(pixels);
             rightTexture.Apply();
+
+            var period = Time.realtimeSinceStartup - time;
+            debugText2.text = "Image Update Period: " + period.ToString();
         }   
+
+        lock (receiveLock)
+        {
+            debugText1.text = "Receive Period: " + receivePeriod.ToString();
+        }
     }
 
     private void OnDestroy()
