@@ -111,8 +111,8 @@ public class CameraStreamer : MonoBehaviour
 
         imageBytes = new byte[40000];
 
-        // robotAddress = "tcp://" + PlayerPrefs.GetString("IP") + ":" + PlayerPrefs.GetString("Port");
-        robotAddress = "tcp://localhost:5555";
+        robotAddress = "tcp://" + PlayerPrefs.GetString("IP") + ":" + PlayerPrefs.GetString("Port");
+        // robotAddress = "tcp://localhost:5555";
         Debug.Log("Connecting to " + robotAddress);
 
         receivingImages = true;

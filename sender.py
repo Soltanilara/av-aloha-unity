@@ -79,6 +79,7 @@ def main() :
 
         elapsed_time = time.time() - start_time
         print("Elapsed time: ", elapsed_time)
+        print("Image size: ", combined_image.shape)
 
     cv2.destroyAllWindows()
     zed.close()
