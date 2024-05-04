@@ -1,3 +1,7 @@
+Assets/StreamingAssets/google-services.json 
+Assets/turnServerKey.json
+Firebase/
+
 # This .gitignore file should be placed at the root of your Unity project directory
 #
 # Get latest from https://github.com/github/gitignore/blob/main/Unity.gitignore

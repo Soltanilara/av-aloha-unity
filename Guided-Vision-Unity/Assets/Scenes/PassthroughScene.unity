@@ -3069,6 +3069,7 @@ GameObject:
   - component: {fileID: 1888419384}
   - component: {fileID: 1888419385}
   - component: {fileID: 1888419386}
+  - component: {fileID: 1888419387}
   m_Layer: 0
   m_Name: Controls
   m_TagString: Untagged
@@ -3100,7 +3101,7 @@ MonoBehaviour:
   m_PrefabInstance: {fileID: 0}
   m_PrefabAsset: {fileID: 0}
   m_GameObject: {fileID: 1888419381}
-  m_Enabled: 1
+  m_Enabled: 0
   m_EditorHideFlags: 0
   m_Script: {fileID: 11500000, guid: c352eb4e79bc04244a630a7716c335e3, type: 3}
   m_Name: 
@@ -3116,7 +3117,7 @@ MonoBehaviour:
   m_PrefabInstance: {fileID: 0}
   m_PrefabAsset: {fileID: 0}
   m_GameObject: {fileID: 1888419381}
-  m_Enabled: 1
+  m_Enabled: 0
   m_EditorHideFlags: 0
   m_Script: {fileID: 11500000, guid: 9b3229456633d3347abe9fbffd74e6dc, type: 3}
   m_Name: 
@@ -3129,7 +3130,7 @@ MonoBehaviour:
   m_PrefabInstance: {fileID: 0}
   m_PrefabAsset: {fileID: 0}
   m_GameObject: {fileID: 1888419381}
-  m_Enabled: 1
+  m_Enabled: 0
   m_EditorHideFlags: 0
   m_Script: {fileID: 11500000, guid: 08d02f41f0daf9248bca7f1d3a06daa1, type: 3}
   m_Name: 
@@ -3137,6 +3138,19 @@ MonoBehaviour:
   headset: {fileID: 1618963564}
   leftController: {fileID: 1883944867}
   rightController: {fileID: 129174498}
+--- !u!114 &1888419387
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 1888419381}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 71787e773c31f854e8327776b76b682c, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: 
+  turnServerKeyFile: {fileID: 4900000, guid: 13b429674d03db549b9f6fedff9c9b35, type: 3}
 --- !u!1 &1952416763
 GameObject:
   m_ObjectHideFlags: 0

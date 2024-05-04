@@ -161,7 +161,9 @@ PlayerSettings:
   resetResolutionOnWindowResize: 0
   androidSupportedAspectRatio: 1
   androidMaxAspectRatio: 2.1
-  applicationIdentifier: {}
+  applicationIdentifier:
+    Android: com.DefaultCompany.guided_vision
+    Standalone: com.DefaultCompany.guided-vision
   buildNumber:
     Standalone: 0
     VisionOS: 0
