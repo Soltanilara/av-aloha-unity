@@ -17,6 +17,8 @@ from aiortc import VideoStreamTrack
 import cv2
 from av import AudioFrame, VideoFrame
 
+ROBOT_ID = 'robot1'
+
 class OpenCVWebcamVideoStreamTrack(VideoStreamTrack):
     def __init__(self):
         super().__init__()
@@ -31,8 +33,6 @@ class OpenCVWebcamVideoStreamTrack(VideoStreamTrack):
         frame.pts = pts
         frame.time_base = time_base
         return frame
-
-ROBOT_ID = 'robot1'
 
 async def run_offer(pc, db):
     channel = pc.createDataChannel("control")
@@ -75,6 +75,10 @@ async def run_offer(pc, db):
         type=data['type']
     ))
 
+    # delete call document
+    call_doc = db.collection('calls').document(ROBOT_ID)
+    call_doc.delete()
+
     # add event listener for connection close
     @pc.on("iceconnectionstatechange")
     async def on_iceconnectionstatechange():
@@ -83,10 +87,6 @@ async def run_offer(pc, db):
             await restart_connection(pc, db)
 
 async def restart_connection(pc, db):
-    # delete current call document
-    call_doc = db.collection('calls').document(ROBOT_ID)
-    call_doc.delete()
-
     # close current peer connection
     await pc.close()
 
@@ -130,7 +130,7 @@ if __name__ == "__main__":
     except KeyboardInterrupt:
         pass
     finally:
-        # delete current call document
+        # delete call document if it exists
         call_doc = db.collection('calls').document(ROBOT_ID)
         call_doc.delete()
         loop.run_until_complete(pc.close())

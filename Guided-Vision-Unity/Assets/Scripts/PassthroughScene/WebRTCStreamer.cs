@@ -47,7 +47,6 @@ public class WebRTCStreamer : MonoBehaviour
     public Transform leftController;
     public Transform rightController;
     public TextAsset turnServerKeyFile;
-    public string ROBOT_ID = "robot1";
     public TextMeshProUGUI debugText;
     public float data_frequency = 20f;
 
@@ -62,10 +61,19 @@ public class WebRTCStreamer : MonoBehaviour
     private MediaStream receiveStream = null;
     private RTCDataChannel dataChannel = null;
     private FirebaseFirestore firestore = null;
+    private string robotID = null;
 
     // Start is called before the first frame update
     void Start()
     {
+        // get robot ID from the player prefs
+        robotID = PlayerPrefs.GetString("RobotID");
+        if (robotID == "")
+        {
+            debugText.text = "Invalid robot ID: " + robotID;
+            return;
+        }
+
         // create firestore instance
         firestore = FirebaseFirestore.DefaultInstance;
 
@@ -151,12 +159,13 @@ public class WebRTCStreamer : MonoBehaviour
     IEnumerator Answer()
     {
         Dictionary<string, object> data = null;
-        Task<DocumentSnapshot> task1 = firestore.Collection("calls").Document(ROBOT_ID).GetSnapshotAsync();
+        Task<DocumentSnapshot> task1 = firestore.Collection("calls").Document(robotID).GetSnapshotAsync();
         yield return new WaitUntil(() => task1.IsCompleted);
 
         if (task1.IsFaulted)
         {
             Debug.LogError("Error getting snapshot: " + task1.Exception);
+            debugText.text = "Error getting snapshot of ID: " + robotID;
             yield break;
         }
 
@@ -183,7 +192,7 @@ public class WebRTCStreamer : MonoBehaviour
         var op = pc.SetLocalDescription(ref desc);
         yield return op;
 
-        Task task2 = firestore.Collection("calls").Document(ROBOT_ID).SetAsync(new Dictionary<string, object>
+        Task task2 = firestore.Collection("calls").Document(robotID).SetAsync(new Dictionary<string, object>
         {
             { "sdp", desc.sdp },
             { "type", "answer" }
