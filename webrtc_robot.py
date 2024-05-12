@@ -25,7 +25,6 @@ class OpenCVWebcamVideoStreamTrack(VideoStreamTrack):
     async def recv(self):
         pts, time_base = await self.next_timestamp()
         ret, frame = self.capture.read()
-        print('frame:', frame.shape)
         if not ret:
             raise RuntimeError("Failed to read frame from webcam")
         frame = VideoFrame.from_ndarray(frame, format="bgr24")
@@ -67,6 +66,7 @@ async def run_offer(pc, db):
                 data = doc.to_dict()
                 loop.call_soon_threadsafe(future.set_result, data)
     doc_watch = call_doc.on_snapshot(answer_callback)
+    print('waiting for answer')
     data = await future
     doc_watch.unsubscribe()
 
@@ -75,7 +75,32 @@ async def run_offer(pc, db):
         type=data['type']
     ))
 
+    # add event listener for connection close
+    @pc.on("iceconnectionstatechange")
+    async def on_iceconnectionstatechange():
+        if pc.iceConnectionState == "closed":
+            print("Connection closed, restarting...")
+            await restart_connection(pc, db)
 
+async def restart_connection(pc, db):
+    # delete current call document
+    call_doc = db.collection('calls').document(ROBOT_ID)
+    call_doc.delete()
+
+    # close current peer connection
+    await pc.close()
+
+    # create new peer connection
+    pc = RTCPeerConnection(
+        configuration=RTCConfiguration([
+            RTCIceServer("stun:stun1.l.google.com:19302"),
+            RTCIceServer("stun:stun2.l.google.com:19302"),
+            RTCIceServer(turnServerKey['url'], turnServerKey['username'], turnServerKey['password'])
+        ])
+    )
+
+    # run offer again
+    await run_offer(pc, db)
 
 if __name__ == "__main__":
     # read firebase-creds.json
@@ -101,13 +126,15 @@ if __name__ == "__main__":
     loop = asyncio.get_event_loop()
     try:
         loop.run_until_complete(coro)
-        # spin
-        print('spinning')
         loop.run_forever()
     except KeyboardInterrupt:
         pass
     finally:
+        # delete current call document
+        call_doc = db.collection('calls').document(ROBOT_ID)
+        call_doc.delete()
         loop.run_until_complete(pc.close())
+
 
     
 
