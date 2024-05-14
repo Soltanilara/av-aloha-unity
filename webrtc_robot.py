@@ -2,22 +2,16 @@ from google.cloud import firestore
 import json
 import asyncio
 from aiortc import (
-    RTCIceCandidate,
     RTCPeerConnection,
     RTCSessionDescription,
     VideoStreamTrack,
     RTCConfiguration,
     RTCIceServer,
 )
-from aiortc.contrib.media import MediaBlackhole, MediaPlayer, MediaRecorder
-from aiortc.contrib.signaling import BYE, add_signaling_arguments, create_signaling
-import threading
-from aiortc.sdp import candidate_from_sdp
 from aiortc import VideoStreamTrack
+from av import VideoFrame
 import cv2
-from av import AudioFrame, VideoFrame
 
-ROBOT_ID = 'robot1'
 
 class OpenCVWebcamVideoStreamTrack(VideoStreamTrack):
     def __init__(self):
@@ -48,7 +42,7 @@ async def run_offer(pc, db):
     pc.addTrack(OpenCVWebcamVideoStreamTrack())
 
 
-    call_doc = db.collection('calls').document(ROBOT_ID)
+    call_doc = db.collection(PASSWORD).document(ROBOT_ID)
 
     # send offer
     await pc.setLocalDescription(await pc.createOffer())
@@ -75,8 +69,10 @@ async def run_offer(pc, db):
         type=data['type']
     ))
 
+    print("received answer sdp: ", data['sdp'])
+
     # delete call document
-    call_doc = db.collection('calls').document(ROBOT_ID)
+    call_doc = db.collection(PASSWORD).document(ROBOT_ID)
     call_doc.delete()
 
     # add event listener for connection close
@@ -95,7 +91,7 @@ async def restart_connection(pc, db):
         configuration=RTCConfiguration([
             RTCIceServer("stun:stun1.l.google.com:19302"),
             RTCIceServer("stun:stun2.l.google.com:19302"),
-            RTCIceServer(turnServerKey['url'], turnServerKey['username'], turnServerKey['password'])
+            RTCIceServer(signalingSettings['turn_server_url'], signalingSettings['turn_server_username'], signalingSettings['turn_server_password'])
         ])
     )
 
@@ -103,20 +99,24 @@ async def restart_connection(pc, db):
     await run_offer(pc, db)
 
 if __name__ == "__main__":
+
     # read firebase-creds.json
     with open('serviceAccountKey.json') as f:
         serviceAccountKey = json.load(f)
 
     db = firestore.Client.from_service_account_info(serviceAccountKey)
 
-    with open('turnServerKey.json') as f:
-        turnServerKey = json.load(f)
+    with open('signalingSettings.json') as f:
+        signalingSettings = json.load(f)
+    
+    ROBOT_ID = signalingSettings['robotID']
+    PASSWORD = signalingSettings['password']
 
     pc = RTCPeerConnection(
         configuration=RTCConfiguration([
             RTCIceServer("stun:stun1.l.google.com:19302"),
             RTCIceServer("stun:stun2.l.google.com:19302"),
-            RTCIceServer(turnServerKey['url'], turnServerKey['username'], turnServerKey['password'])
+            RTCIceServer(signalingSettings['turn_server_url'], signalingSettings['turn_server_username'], signalingSettings['turn_server_password'])
         ])
     )
 
@@ -131,7 +131,7 @@ if __name__ == "__main__":
         pass
     finally:
         # delete call document if it exists
-        call_doc = db.collection('calls').document(ROBOT_ID)
+        call_doc = db.collection(PASSWORD).document(ROBOT_ID)
         call_doc.delete()
         loop.run_until_complete(pc.close())
 
