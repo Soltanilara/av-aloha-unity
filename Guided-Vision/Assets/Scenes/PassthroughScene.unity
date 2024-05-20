@@ -190,7 +190,8 @@ MonoBehaviour:
   leftController: {fileID: 1883944867}
   rightController: {fileID: 129174498}
   debugText: {fileID: 543322060}
-  data_frequency: 20
+  dataFrequency: 20
+  videoFrequency: 30
 --- !u!4 &116832836
 Transform:
   m_ObjectHideFlags: 0
@@ -1841,7 +1842,7 @@ Canvas:
   m_AdditionalShaderChannelsFlag: 0
   m_UpdateRectTransformForStandalone: 0
   m_SortingLayerID: 0
-  m_SortingOrder: 1
+  m_SortingOrder: 0
   m_TargetDisplay: 0
 --- !u!1 &1132786439
 GameObject:

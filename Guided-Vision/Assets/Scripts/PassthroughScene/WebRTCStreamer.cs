@@ -63,8 +63,6 @@ public class WebRTCStreamer : MonoBehaviour
     private string projectID = null;
     private string password = null;
 
-    private Quaternion ROTATE_TO_ROS_WORLD = Quaternion.Euler(-90, 0, -90);
-
     // Start is called before the first frame update
     void Start()
     {
@@ -263,7 +261,6 @@ public class WebRTCStreamer : MonoBehaviour
         int frameCount = 0;
         while (true)
         {
-            float startTime = Time.realtimeSinceStartup;
             yield return new WaitForEndOfFrame();
             Graphics.CopyTexture(
                 receivedTexture, 0, 0, 
@@ -277,16 +274,9 @@ public class WebRTCStreamer : MonoBehaviour
                 rightTexture, 0, 0, 
                 0, 0
             );         
-            float endTime = Time.realtimeSinceStartup;
-            // wait for some time to match the video frequency
-            float waitTime = 1f / videoFrequency - (endTime - startTime);
-            if (waitTime > 0)
-            {
-                yield return new WaitForSeconds(waitTime);
-            }
 
             frameCount++;
-            if (frameCount >= 100) // calculate FPS every 100 frames
+            if (frameCount >= 10) // calculate FPS every 100 frames
             {
                 float totalTime = Time.realtimeSinceStartup - time;
                 float fps = frameCount / totalTime;
@@ -297,26 +287,6 @@ public class WebRTCStreamer : MonoBehaviour
         }
     }
 
-    Pose convertLeftToRightCoordinateFrame(Pose leftPose)
-    {
-        // Flip y axis and rotation from left to right
-        float x = leftPose.position.x;
-        float y = -leftPose.position.y;
-        float z = leftPose.position.z;
-        float qx = -leftPose.rotation.x;
-        float qy = leftPose.rotation.y;
-        float qz = -leftPose.rotation.z;
-        float qw = leftPose.rotation.w;
-
-        // Transform to world coordinates
-        Vector3 position = new Vector3(x, y, z);
-        Quaternion rotation = new Quaternion(qx, qy, qz, qw);
-        position = ROTATE_TO_ROS_WORLD * position;
-        rotation = ROTATE_TO_ROS_WORLD * rotation;
-
-        return new Pose(position, rotation);
-    }
-
     // Update is called once per frame
     void Update()
     {
@@ -325,24 +295,18 @@ public class WebRTCStreamer : MonoBehaviour
         if (dataChannel != null && dataTimer >= 1f / dataFrequency)
         {
             dataTimer = 0f;
-
-            // convert the poses to the right coordinate frame
-            Pose headPose = convertLeftToRightCoordinateFrame(new Pose(headset.position, headset.rotation));
-            Pose leftPose = convertLeftToRightCoordinateFrame(new Pose(leftController.position, leftController.rotation));
-            Pose rightPose = convertLeftToRightCoordinateFrame(new Pose(rightController.position, rightController.rotation));
-
-            headsetData.HPosition = headPose.position;
-            headsetData.HRotation = headPose.rotation;
-            headsetData.LPosition = leftPose.position;
-            headsetData.LRotation = leftPose.rotation;
+            headsetData.HPosition = headset.position;
+            headsetData.HRotation = headset.rotation;
+            headsetData.LPosition = leftController.position;
+            headsetData.LRotation = leftController.rotation;
             headsetData.LThumbstick = OVRInput.Get(OVRInput.Axis2D.PrimaryThumbstick, OVRInput.Controller.LTouch);
             headsetData.LIndexTrigger = OVRInput.Get(OVRInput.Axis1D.PrimaryIndexTrigger, OVRInput.Controller.LTouch);
             headsetData.LHandTrigger = OVRInput.Get(OVRInput.Axis1D.PrimaryHandTrigger, OVRInput.Controller.LTouch);
             headsetData.LButtonOne = OVRInput.Get(OVRInput.Button.One, OVRInput.Controller.LTouch);
             headsetData.LButtonTwo = OVRInput.Get(OVRInput.Button.Two, OVRInput.Controller.LTouch);
             headsetData.LButtonThumbstick = OVRInput.Get(OVRInput.Button.PrimaryThumbstick, OVRInput.Controller.LTouch);
-            headsetData.RPosition = rightPose.position;
-            headsetData.RRotation = rightPose.rotation;
+            headsetData.RPosition = rightController.position;
+            headsetData.RRotation = rightController.rotation;
             headsetData.RThumbstick = OVRInput.Get(OVRInput.Axis2D.PrimaryThumbstick, OVRInput.Controller.RTouch);
             headsetData.RIndexTrigger = OVRInput.Get(OVRInput.Axis1D.PrimaryIndexTrigger, OVRInput.Controller.RTouch);
             headsetData.RHandTrigger = OVRInput.Get(OVRInput.Axis1D.PrimaryHandTrigger, OVRInput.Controller.RTouch);
