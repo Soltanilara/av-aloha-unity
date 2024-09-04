@@ -45,9 +45,11 @@ public class WebRTCStreamer : MonoBehaviour
     public float dataFrequency = 20f;
     public float videoFrequency = 30f;
 
-    private Texture2D receivedTexture = null;
+    private Texture2D receivedLeftTexture = null;
+    private Texture2D receivedRightTexture = null;
     private Texture2D leftTexture = null;
     private Texture2D rightTexture = null;
+    private int videoTrackCount = 0;
 
     private HeadsetData headsetData;
     private float dataTimer = 0f;
@@ -90,15 +92,27 @@ public class WebRTCStreamer : MonoBehaviour
         receiveStream.OnAddTrack = e => {
             if (e.Track is VideoStreamTrack track)
             {
-                // You can access received texture using `track.Texture` property.
-                track.OnVideoReceived += (texture) => {
-                    receivedTexture = texture as Texture2D;
-                    leftTexture = new Texture2D(receivedTexture.width / 2, receivedTexture.height, receivedTexture.format, false);
-                    rightTexture = new Texture2D(receivedTexture.width / 2, receivedTexture.height, receivedTexture.format, false);
-                    leftImage.texture = leftTexture;
-                    rightImage.texture = rightTexture;
-                    StartCoroutine(ConvertFrame());
-                };
+                if (videoTrackCount == 0) {
+                    // You can access received texture using `track.Texture` property.
+                    track.OnVideoReceived += (texture) => {
+                        receivedLeftTexture = texture as Texture2D;
+                        leftTexture = new Texture2D(receivedLeftTexture.width, receivedLeftTexture.height, receivedLeftTexture.format, false);
+                        leftImage.texture = leftTexture;
+                        StartCoroutine(ConvertLeftFrame());
+                    };
+                }
+                else {
+                    // You can access received texture using `track.Texture` property.
+                    track.OnVideoReceived += (texture) => {
+                        receivedRightTexture = texture as Texture2D;
+                        rightTexture = new Texture2D(receivedRightTexture.width, receivedRightTexture.height, receivedRightTexture.format, false);
+                        rightImage.texture = rightTexture;
+                        StartCoroutine(ConvertRightFrame());
+                    };
+                }
+
+                videoTrackCount++;
+                    
             }
         };
 
@@ -291,35 +305,31 @@ public class WebRTCStreamer : MonoBehaviour
         pc = null;
     }
 
-    IEnumerator ConvertFrame()
+    IEnumerator ConvertLeftFrame()
     {
-        // float time = Time.realtimeSinceStartup;
-        // int frameCount = 0;
         while (true)
         {
             yield return new WaitForEndOfFrame();
             Graphics.CopyTexture(
-                receivedTexture, 0, 0, 
-                0, 0, receivedTexture.width / 2, receivedTexture.height,
+                receivedLeftTexture, 0, 0, 
+                0, 0, receivedLeftTexture.width, receivedLeftTexture.height,
                 leftTexture, 0, 0, 
                 0, 0
-            );
+            );    
+        }
+    }
+
+    IEnumerator ConvertRightFrame()
+    {
+        while (true)
+        {
+            yield return new WaitForEndOfFrame();
             Graphics.CopyTexture(
-                receivedTexture, 0, 0, 
-                receivedTexture.width / 2, 0, receivedTexture.width / 2, receivedTexture.height,
+                receivedRightTexture, 0, 0, 
+                0, 0, receivedRightTexture.width, receivedRightTexture.height,
                 rightTexture, 0, 0, 
                 0, 0
-            );         
-
-            // frameCount++;
-            // if (frameCount >= 10) // calculate FPS every 100 frames
-            // {
-            //     float totalTime = Time.realtimeSinceStartup - time;
-            //     float fps = frameCount / totalTime;
-            //     debugText.text = "FPS: " + fps.ToString("F2"); // display FPS with 2 decimal points
-            //     time = Time.realtimeSinceStartup;
-            //     frameCount = 0;
-            // }
+            );
         }
     }
 
