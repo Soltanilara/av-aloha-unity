@@ -60,6 +60,7 @@ public class WebRTCStreamer : MonoBehaviour
     private Texture2D leftTexture = null;
     private Texture2D rightTexture = null;
     private int videoTrackCount = 0;
+    private int receiveStreamCount = 0;
 
     private HeadsetData headsetData;
     private float dataTimer = 0f;
@@ -80,6 +81,9 @@ public class WebRTCStreamer : MonoBehaviour
     private string robotID = null;
     private string projectID = null;
     private string password = null;
+
+    private RTCRtpReceiver leftReceiver = null;
+    private RTCRtpReceiver rightReceiver = null; 
 
     // Start is called before the first frame update
     void Start()
@@ -158,6 +162,20 @@ public class WebRTCStreamer : MonoBehaviour
                 // Add track to MediaStream for receiver.
                 // This process triggers `OnAddTrack` event of `MediaStream`.
                 receiveStream.AddTrack(e.Track);
+
+
+                if (receiveStreamCount == 0)
+                {
+                    leftReceiver = e.Receiver;
+                    SetUpReceiverTransform(leftReceiver);
+                }
+                else
+                {
+                    rightReceiver = e.Receiver;
+                    SetUpReceiverTransform(rightReceiver);
+                }
+
+                receiveStreamCount++;
             }
         };
 
@@ -209,6 +227,30 @@ public class WebRTCStreamer : MonoBehaviour
 
         StartCoroutine(Answer());
         StartCoroutine(WebRTC.Update());
+    }
+
+    private void SetUpReceiverTransform(RTCRtpReceiver receiver)
+    {
+        receiver.Transform = new RTCRtpScriptTransform(TrackKind.Video, e => OnReceiverTransform(receiver.Transform, e));
+    }
+
+    void OnReceiverTransform(RTCRtpTransform transform, RTCTransformEvent e)
+    {
+        var data = e.Frame.GetData();
+
+        var length = data.Length - (1 + 0);
+        e.Frame.SetData(data, 0, length);
+        transform.Write(e.Frame);
+
+        // lock (metadataOutputLock)
+        // {
+        //     if (metadataOutputArray == null || metadataOutputArray.Length != metadataLength)
+        //         metadataOutputArray = new byte[metadataLength];
+        //     for (int i = 0; i < metadataLength; i++)
+        //     {
+        //         metadataOutputArray[i] = data[length + i];
+        //     }
+        // }
     }
 
     RTCConfiguration GetSelectedSdpSemantics()
@@ -462,11 +504,6 @@ public class WebRTCStreamer : MonoBehaviour
             // Update headWarningText with only the local hit points
             headWarningText.text = $"Left eye: {leftPixel}\nRight eye: {rightPixel}";
         }
-
-        
-
-
-
 
         // send data to the robot
         dataTimer += Time.deltaTime;

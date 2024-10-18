@@ -181,24 +181,27 @@ MonoBehaviour:
   m_GameObject: {fileID: 116832833}
   m_Enabled: 1
   m_EditorHideFlags: 0
-  m_Script: {fileID: 11500000, guid: 71787e773c31f854e8327776b76b682c, type: 3}
+  m_Script: {fileID: 11500000, guid: c634050dbf02e4285b2a6f8c2be0dd28, type: 3}
   m_Name: 
   m_EditorClassIdentifier: 
   leftImage: {fileID: 685298577}
   rightImage: {fileID: 2008193231}
+  leftCanvas: {fileID: 1052287930}
+  rightCanvas: {fileID: 2147130783}
   headset: {fileID: 1618963564}
   leftController: {fileID: 1883944867}
   rightController: {fileID: 129174498}
-  leftArmVisual: {fileID: 468777160}
-  rightArmVisual: {fileID: 1832215949}
   leftEye: {fileID: 241128753}
   rightEye: {fileID: 1381859664}
+  leftArmVisual: {fileID: 468777160}
+  rightArmVisual: {fileID: 1832215949}
   headWarningText: {fileID: 1293816628}
   infoText: {fileID: 2005319750}
   debugText: {fileID: 400757030}
   dataFrequency: 20
   videoFrequency: 30
-  screenDistance: 0.9
+  videoPlaneDistance: 1
+  videoVFOV: 105
   leftEyeMarker: {fileID: 1293816625}
   rightEyeMarker: {fileID: 2005319747}
 --- !u!4 &116832836
@@ -506,6 +509,9 @@ MonoBehaviour:
   blockId: f92445a7-db19-452c-8d3d-96820f6c8972
   instanceId: 61e51b9b-b1e7-4eda-99f4-8c7c2c7ac7a2
   version: 1
+  installationRoutineCheckpoint:
+    _installationRoutineId: 
+    _installationVariants: []
 --- !u!1 &241230205
 GameObject:
   m_ObjectHideFlags: 0
@@ -1691,6 +1697,9 @@ MonoBehaviour:
   blockId: e47682b9-c270-40b1-b16d-90b627a5ce1b
   instanceId: 9305efcf-b0ff-4162-b679-a73681125e15
   version: 1
+  installationRoutineCheckpoint:
+    _installationRoutineId: 
+    _installationVariants: []
 --- !u!1 &1052287926
 GameObject:
   m_ObjectHideFlags: 0
@@ -2530,6 +2539,9 @@ MonoBehaviour:
   blockId: f92445a7-db19-452c-8d3d-96820f6c8972
   instanceId: dd0fb805-191b-4b73-8ded-13f44640f8ef
   version: 1
+  installationRoutineCheckpoint:
+    _installationRoutineId: 
+    _installationVariants: []
 --- !u!1 &1393435136
 GameObject:
   m_ObjectHideFlags: 0
