@@ -18,6 +18,8 @@ public class TransitionPassthroughScene : MonoBehaviour
     public InputField turnServerPasswordInputField;
     public InputField videoRenderFrequencyInputField;
     public InputField dataSendFrequencyInputField;
+    public InputField videoPlaneDistanceInputField;
+    public InputField videoVFOVInputField;
     public TMP_Text debugText;
     public string sceneName;
 
@@ -43,6 +45,22 @@ public class TransitionPassthroughScene : MonoBehaviour
         else
         {
             dataSendFrequencyInputField.text = "20";
+        }
+        if (PlayerPrefs.HasKey("VideoPlaneDistance"))
+        {
+            videoPlaneDistanceInputField.text = PlayerPrefs.GetFloat("VideoPlaneDistance").ToString();
+        }
+        else
+        {
+            videoPlaneDistanceInputField.text = "1.0";
+        }
+        if (PlayerPrefs.HasKey("VideoVFOV"))
+        {
+            videoVFOVInputField.text = PlayerPrefs.GetFloat("VideoVFOV").ToString();
+        }
+        else
+        {
+            videoVFOVInputField.text = "105";
         }
 
         loadButton.onClick.AddListener(() => loadRobots());
