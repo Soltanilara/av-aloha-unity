@@ -30,6 +30,8 @@ public class HeadsetData
     public bool RButtonThumbstick;
     public Vector2 LEyePixel;
     public Vector2 REyePixel;
+    public uint LeftTimestamp;
+    public uint RightTimestamp;
 }
 
 public class WebRTCStreamer : MonoBehaviour
@@ -52,6 +54,7 @@ public class WebRTCStreamer : MonoBehaviour
     public float videoFrequency = 30f;
     public float videoPlaneDistance = 1.0f;
     public float videoVFOV = 105f;
+    public int metadataLength = 4;
     public GameObject leftEyeMarker;
     public GameObject rightEyeMarker;
 
@@ -83,7 +86,11 @@ public class WebRTCStreamer : MonoBehaviour
     private string password = null;
 
     private RTCRtpReceiver leftReceiver = null;
-    private RTCRtpReceiver rightReceiver = null; 
+    private RTCRtpReceiver rightReceiver = null;
+    private readonly object leftMetadataOutputLock = new object();
+    private readonly object rightMetadataOutputLock = new object();
+    private uint leftTimestamp = 0;
+    private uint rightTimestamp = 0;
 
     // Start is called before the first frame update
     void Start()
@@ -103,10 +110,9 @@ public class WebRTCStreamer : MonoBehaviour
         rightCanvas.transform.localPosition = Vector3.forward * videoPlaneDistance; 
 
         // TODO remove this
-        robotID = "robot1";
-        projectID = "webrtc-7cd49";
-        password = "pokemonnaruto";
-
+        // robotID = "robot1";
+        // projectID = "webrtc-7cd49";
+        // password = "pokemonnaruto";
 
         // create a new peer connection
         var configuration = GetSelectedSdpSemantics();
@@ -167,12 +173,12 @@ public class WebRTCStreamer : MonoBehaviour
                 if (receiveStreamCount == 0)
                 {
                     leftReceiver = e.Receiver;
-                    SetUpReceiverTransform(leftReceiver);
+                    SetUpLeftReceiverTransform(leftReceiver);
                 }
                 else
                 {
                     rightReceiver = e.Receiver;
-                    SetUpReceiverTransform(rightReceiver);
+                    SetUpRightReceiverTransform(rightReceiver);
                 }
 
                 receiveStreamCount++;
@@ -229,28 +235,43 @@ public class WebRTCStreamer : MonoBehaviour
         StartCoroutine(WebRTC.Update());
     }
 
-    private void SetUpReceiverTransform(RTCRtpReceiver receiver)
+    private void SetUpLeftReceiverTransform(RTCRtpReceiver receiver)
     {
-        receiver.Transform = new RTCRtpScriptTransform(TrackKind.Video, e => OnReceiverTransform(receiver.Transform, e));
+        receiver.Transform = new RTCRtpScriptTransform(TrackKind.Video, e => OnLeftReceiverTransform(receiver.Transform, e));
     }
 
-    void OnReceiverTransform(RTCRtpTransform transform, RTCTransformEvent e)
+    private void SetUpRightReceiverTransform(RTCRtpReceiver receiver)
     {
+        receiver.Transform = new RTCRtpScriptTransform(TrackKind.Video, e => OnRightReceiverTransform(receiver.Transform, e));
+    }
+
+    void OnLeftReceiverTransform(RTCRtpTransform transform, RTCTransformEvent e)
+    {
+        Debug.Log("Left receiver transform");
         var data = e.Frame.GetData();
 
-        var length = data.Length - (1 + 0);
+        var length = data.Length - metadataLength;
         e.Frame.SetData(data, 0, length);
         transform.Write(e.Frame);
 
-        // lock (metadataOutputLock)
-        // {
-        //     if (metadataOutputArray == null || metadataOutputArray.Length != metadataLength)
-        //         metadataOutputArray = new byte[metadataLength];
-        //     for (int i = 0; i < metadataLength; i++)
-        //     {
-        //         metadataOutputArray[i] = data[length + i];
-        //     }
-        // }
+        lock (leftMetadataOutputLock)
+        {
+            leftTimestamp = System.BitConverter.ToUInt32(data.Skip(length).Reverse().ToArray(), 0);
+        }
+    }
+
+    void OnRightReceiverTransform(RTCRtpTransform transform, RTCTransformEvent e)
+    {
+        var data = e.Frame.GetData();
+
+        var length = data.Length - metadataLength;
+        e.Frame.SetData(data, 0, length);
+        transform.Write(e.Frame);
+
+        lock (rightMetadataOutputLock)
+        {
+            rightTimestamp = System.BitConverter.ToUInt32(data.Skip(length).Reverse().ToArray(), 0);
+        }
     }
 
     RTCConfiguration GetSelectedSdpSemantics()
@@ -492,6 +513,9 @@ public class WebRTCStreamer : MonoBehaviour
 
     void Update()
     {
+
+
+
         (Vector2 leftPixel, Vector3 leftHit, Vector3 leftDirection, bool leftHitSuccess) = GetLeftEyeInfo();
         (Vector2 rightPixel, Vector3 rightHit, Vector3 rightDirection, bool rightHitSuccess) = GetRightEyeInfo();
 
@@ -500,16 +524,24 @@ public class WebRTCStreamer : MonoBehaviour
             // Set the marker positions based on the calculated 
             leftEyeMarker.transform.localPosition = leftHit;
             rightEyeMarker.transform.localPosition = rightHit;
-
-            // Update headWarningText with only the local hit points
-            headWarningText.text = $"Left eye: {leftPixel}\nRight eye: {rightPixel}";
         }
+
+        
+        uint leftTimestampCopy;
+        uint rightTimestampCopy;
+        lock (leftMetadataOutputLock)
+        {
+            leftTimestampCopy = leftTimestamp;
+        }
+        lock (rightMetadataOutputLock)
+        {
+            rightTimestampCopy = rightTimestamp;
+        }        
 
         // send data to the robot
         dataTimer += Time.deltaTime;
         if (dataChannel != null && dataTimer >= 1f / dataFrequency)
         {
-            Debug.Log("Sending data to the robot");
             dataTimer = 0f;
             headsetData.HPosition = headset.position;
             headsetData.HRotation = headset.rotation;
@@ -531,42 +563,45 @@ public class WebRTCStreamer : MonoBehaviour
             headsetData.RButtonThumbstick = OVRInput.Get(OVRInput.Button.PrimaryThumbstick, OVRInput.Controller.RTouch);
             headsetData.LEyePixel = leftPixel;
             headsetData.REyePixel = rightPixel;
+            headsetData.LeftTimestamp = leftTimestampCopy;
+            headsetData.RightTimestamp = rightTimestampCopy;
             string message = JsonUtility.ToJson(headsetData);
             dataChannel.Send(System.Text.Encoding.UTF8.GetBytes(message));
         }    
 
-        // lock (dataChannelReceiveLock)
-        // {
-        //     if (headOutOfSync)
-        //     {
-        //         headWarningText.text = "Head out of sync!";
-        //     }
-        //     else
-        //     {
-        //         headWarningText.text = "";
-        //     }
+        lock (dataChannelReceiveLock)
+        {
+            if (headOutOfSync)
+            {
+                headWarningText.text = "Head out of sync!";
+            }
+            else
+            {
+                headWarningText.text = "";
+            }
 
-        //     if (leftOutOfSync)
-        //     {
-        //         leftArmVisual.SetActive(true);
-        //         leftArmVisual.transform.position = new Vector3(leftArmPosition.x, leftArmPosition.y, leftArmPosition.z);
-        //         leftArmVisual.transform.rotation = new Quaternion(leftArmRotation.x, leftArmRotation.y, leftArmRotation.z, leftArmRotation.w);
-        //     }
-        //     else
-        //     {
-        //         leftArmVisual.SetActive(false);
-        //     }
+            if (leftOutOfSync)
+            {
+                leftArmVisual.SetActive(true);
+                leftArmVisual.transform.position = new Vector3(leftArmPosition.x, leftArmPosition.y, leftArmPosition.z);
+                leftArmVisual.transform.rotation = new Quaternion(leftArmRotation.x, leftArmRotation.y, leftArmRotation.z, leftArmRotation.w);
+            }
+            else
+            {
+                leftArmVisual.SetActive(false);
+            }
 
-        //     if (rightOutOfSync)
-        //     {
-        //         rightArmVisual.SetActive(true);
-        //         rightArmVisual.transform.position = new Vector3(rightArmPosition.x, rightArmPosition.y, rightArmPosition.z);
-        //         rightArmVisual.transform.rotation = new Quaternion(rightArmRotation.x, rightArmRotation.y, rightArmRotation.z, rightArmRotation.w);
-        //     }
-        //     else
-        //     {
-        //         rightArmVisual.SetActive(false);
-        //     }
+            if (rightOutOfSync)
+            {
+                rightArmVisual.SetActive(true);
+                rightArmVisual.transform.position = new Vector3(rightArmPosition.x, rightArmPosition.y, rightArmPosition.z);
+                rightArmVisual.transform.rotation = new Quaternion(rightArmRotation.x, rightArmRotation.y, rightArmRotation.z, rightArmRotation.w);
+            }
+            else
+            {
+                rightArmVisual.SetActive(false);
+            }
     }
+}
 }
 

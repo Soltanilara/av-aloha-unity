@@ -9084,8 +9084,8 @@ MonoBehaviour:
   turnServerPasswordInputField: {fileID: 574854589}
   videoRenderFrequencyInputField: {fileID: 2084204893}
   dataSendFrequencyInputField: {fileID: 2007458130}
-  videoPlaneDistanceInputField: {fileID: 0}
-  videoVFOVInputField: {fileID: 0}
+  videoPlaneDistanceInputField: {fileID: 1586353551}
+  videoVFOVInputField: {fileID: 218510358}
   debugText: {fileID: 1195625114}
   sceneName: Scenes/PassthroughScene
 --- !u!4 &2123608315
