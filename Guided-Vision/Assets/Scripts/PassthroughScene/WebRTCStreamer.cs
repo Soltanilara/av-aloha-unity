@@ -45,6 +45,8 @@ public class WebRTCStreamer : MonoBehaviour
     public Transform rightController;
     public Transform leftEye;
     public Transform rightEye;
+    public GameObject leftEyeMarker;
+    public GameObject rightEyeMarker;
     public GameObject leftArmVisual;
     public GameObject rightArmVisual;
     public TextMeshProUGUI headWarningText;
@@ -55,8 +57,6 @@ public class WebRTCStreamer : MonoBehaviour
     public float videoPlaneDistance = 1.0f;
     public float videoVFOV = 105f;
     public int metadataLength = 4;
-    public GameObject leftEyeMarker;
-    public GameObject rightEyeMarker;
 
     private Texture2D receivedLeftTexture = null;
     private Texture2D receivedRightTexture = null;
@@ -454,7 +454,7 @@ public class WebRTCStreamer : MonoBehaviour
         float y = hitPoint.y / halfHeight * height / 2;
 
 
-        return new Vector2(x, y);
+        return new Vector2(x + width/2, -y + height/2);
     }
 
     (Vector2, Vector3, Vector3, bool) GetLeftEyeInfo()
@@ -514,16 +514,46 @@ public class WebRTCStreamer : MonoBehaviour
     void Update()
     {
 
-
+        
 
         (Vector2 leftPixel, Vector3 leftHit, Vector3 leftDirection, bool leftHitSuccess) = GetLeftEyeInfo();
         (Vector2 rightPixel, Vector3 rightHit, Vector3 rightDirection, bool rightHitSuccess) = GetRightEyeInfo();
 
+        // draw 10x10 square on right image
+        // if (rightHitSuccess)
+        // {
+        //     int x = (int)rightPixel.x;
+        //     int y = (int)rightPixel.y;
+        //     for (int i = -5; i <= 5; i++)
+        //     {
+        //         for (int j = -5; j <= 5; j++)
+        //         {
+        //             rightTexture.SetPixel(x + i, rightImage.texture.height-y + j, Color.red);
+        //         }
+        //     }
+        //     rightTexture.Apply();
+        // }
+
+        // // draw 10x10 square on left image Green
+        // if (leftHitSuccess)
+        // {
+        //     int x = (int)leftPixel.x;
+        //     int y = (int)leftPixel.y;
+        //     for (int i = -5; i <= 5; i++)
+        //     {
+        //         for (int j = -5; j <= 5; j++)
+        //         {
+        //             leftTexture.SetPixel(x + i, leftImage.texture.height-y + j, Color.green);
+        //         }
+        //     }
+        //     leftTexture.Apply();
+        // }
+
         if (leftHitSuccess && rightHitSuccess)
         {
             // Set the marker positions based on the calculated 
-            leftEyeMarker.transform.localPosition = leftHit;
-            rightEyeMarker.transform.localPosition = rightHit;
+            leftEyeMarker.transform.localPosition = new Vector3(leftHit.x, leftHit.y, 0);
+            rightEyeMarker.transform.localPosition = new Vector3(rightHit.x, rightHit.y, 0);
         }
 
         
@@ -568,6 +598,7 @@ public class WebRTCStreamer : MonoBehaviour
             string message = JsonUtility.ToJson(headsetData);
             dataChannel.Send(System.Text.Encoding.UTF8.GetBytes(message));
         }    
+
 
         lock (dataChannelReceiveLock)
         {
