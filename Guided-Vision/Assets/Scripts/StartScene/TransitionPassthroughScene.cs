@@ -60,7 +60,7 @@ public class TransitionPassthroughScene : MonoBehaviour
         }
         else
         {
-            videoVFOVInputField.text = "105";
+            videoVFOVInputField.text = "90";
         }
 
         loadButton.onClick.AddListener(() => loadRobots());
@@ -115,6 +115,8 @@ public class TransitionPassthroughScene : MonoBehaviour
         PlayerPrefs.SetString("TurnServerPassword", turnServerPasswordInputField.text);
         PlayerPrefs.SetFloat("VideoRenderFrequency", float.Parse(videoRenderFrequencyInputField.text));
         PlayerPrefs.SetFloat("DataSendFrequency", float.Parse(dataSendFrequencyInputField.text));
+        PlayerPrefs.SetFloat("VideoPlaneDistance", float.Parse(videoPlaneDistanceInputField.text));
+        PlayerPrefs.SetFloat("VideoVFOV", float.Parse(videoVFOVInputField.text));
         SceneManager.LoadScene(sceneName);
     }
 }

@@ -103,7 +103,7 @@ public class WebRTCStreamer : MonoBehaviour
         dataFrequency = PlayerPrefs.GetFloat("DataSendFrequency", 20f);
         videoFrequency = PlayerPrefs.GetFloat("VideoRenderFrequency", 30f);
         videoPlaneDistance = PlayerPrefs.GetFloat("VideoPlaneDistance", 1.0f);
-        videoVFOV = PlayerPrefs.GetFloat("VideoVFOV", 105f);
+        videoVFOV = PlayerPrefs.GetFloat("VideoVFOV", 90f);
 
         // set canvas local position
         leftCanvas.transform.localPosition = Vector3.forward * videoPlaneDistance;
