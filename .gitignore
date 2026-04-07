@@ -1,2 +1,4 @@
 serviceAccountKey.json
 signalingSettings.json
+webrtc_env/
+*.mp4
