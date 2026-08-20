@@ -4,8 +4,11 @@ using Unity.WebRTC;
 using UnityEngine.UI;
 using TMPro;
 using UnityEngine.Networking;
+using Unity.Collections;
 using OVRSimpleJSON;
+using System;
 using System.Linq;
+using System.Collections.Generic;
 
 [System.Serializable]
 public class HeadsetData
@@ -57,13 +60,32 @@ public class WebRTCStreamer : MonoBehaviour
     public float videoPlaneDistance = 1.0f;
     public float videoVFOV = 105f;
     public int metadataLength = 4;
+    public float offerPollIntervalSeconds = 1f;
+    public float offerPollTimeoutSeconds = 20f;
+    public float iceGatheringTimeoutSeconds = 5f;
+    public float postIceCandidateQuietPeriodSeconds = 0.5f;
 
-    private Texture2D receivedLeftTexture = null;
-    private Texture2D receivedRightTexture = null;
-    private Texture2D leftTexture = null;
-    private Texture2D rightTexture = null;
+    private Texture latestLeftSourceTexture = null;
+    private Texture latestRightSourceTexture = null;
+    private RenderTexture leftDisplayTexture = null;
+    private RenderTexture rightDisplayTexture = null;
     private int videoTrackCount = 0;
     private int receiveStreamCount = 0;
+    private int leftReceivedFrameId = 0;
+    private int rightReceivedFrameId = 0;
+    private int leftRenderedFrameId = 0;
+    private int rightRenderedFrameId = 0;
+    private float leftLastReceiveRealtime = 0f;
+    private float rightLastReceiveRealtime = 0f;
+    private float leftLastRenderRealtime = 0f;
+    private float rightLastRenderRealtime = 0f;
+    private int leftReceivedFramesThisSecond = 0;
+    private int rightReceivedFramesThisSecond = 0;
+    private int leftRenderedFramesThisSecond = 0;
+    private int rightRenderedFramesThisSecond = 0;
+    private float videoStatsTimer = 0f;
+    private float videoRenderTimer = 0f;
+    private string videoStatsText = string.Empty;
 
     private HeadsetData headsetData;
     private float dataTimer = 0f;
@@ -91,6 +113,9 @@ public class WebRTCStreamer : MonoBehaviour
     private readonly object rightMetadataOutputLock = new object();
     private uint leftTimestamp = 0;
     private uint rightTimestamp = 0;
+    private RTCIceGatheringState currentIceGatheringState = RTCIceGatheringState.New;
+    private int localIceCandidateCount = 0;
+    private float lastLocalIceCandidateRealtime = -1f;
 
     // Start is called before the first frame update
     void Start()
@@ -117,6 +142,21 @@ public class WebRTCStreamer : MonoBehaviour
         // create a new peer connection
         var configuration = GetSelectedSdpSemantics();
         pc = new RTCPeerConnection(ref configuration);
+        pc.OnConnectionStateChange = state =>
+        {
+            Debug.Log("Peer connection state: " + state);
+            debugText.text = "Peer connection state: " + state;
+        };
+        pc.OnIceConnectionChange = state =>
+        {
+            Debug.Log("ICE connection state: " + state);
+            debugText.text = "ICE connection state: " + state;
+        };
+        pc.OnIceGatheringStateChange = state =>
+        {
+            currentIceGatheringState = state;
+            Debug.Log("ICE gathering state: " + state);
+        };
 
         receiveStream = new MediaStream();
         headsetData = new HeadsetData();
@@ -130,14 +170,17 @@ public class WebRTCStreamer : MonoBehaviour
                     // You can access received texture using `track.Texture` property.
                     track.OnVideoReceived += (texture) =>
                     {
-                        receivedLeftTexture = texture as Texture2D;
-                        leftTexture = new Texture2D(receivedLeftTexture.width, receivedLeftTexture.height, receivedLeftTexture.format, false);
-                        leftImage.texture = leftTexture;
+                        if (texture == null)
+                        {
+                            return;
+                        }
 
-                        Vector2 canvasSize1 = CalculateCanvasSize(videoVFOV, (float)leftImage.texture.width / leftImage.texture.height, videoPlaneDistance);
-                        rightCanvas.GetComponent<RectTransform>().sizeDelta = canvasSize1;
+                        latestLeftSourceTexture = texture;
+                        leftReceivedFrameId++;
+                        leftReceivedFramesThisSecond++;
+                        leftLastReceiveRealtime = Time.realtimeSinceStartup;
 
-                        StartCoroutine(ConvertLeftFrame());
+                        EnsureDisplayTexture(ref leftDisplayTexture, texture, leftImage, leftCanvas);
                     };
                 }
                 else
@@ -145,14 +188,17 @@ public class WebRTCStreamer : MonoBehaviour
                     // You can access received texture using `track.Texture` property.
                     track.OnVideoReceived += (texture) =>
                     {
-                        receivedRightTexture = texture as Texture2D;
-                        rightTexture = new Texture2D(receivedRightTexture.width, receivedRightTexture.height, receivedRightTexture.format, false);
-                        rightImage.texture = rightTexture;
+                        if (texture == null)
+                        {
+                            return;
+                        }
 
-                        Vector2 canvasSize2 = CalculateCanvasSize(videoVFOV, (float)rightImage.texture.width / rightImage.texture.height, videoPlaneDistance);
-                        leftCanvas.GetComponent<RectTransform>().sizeDelta = canvasSize2;
+                        latestRightSourceTexture = texture;
+                        rightReceivedFrameId++;
+                        rightReceivedFramesThisSecond++;
+                        rightLastReceiveRealtime = Time.realtimeSinceStartup;
 
-                        StartCoroutine(ConvertRightFrame());
+                        EnsureDisplayTexture(ref rightDisplayTexture, texture, rightImage, rightCanvas);
                     };
                 }
 
@@ -165,6 +211,7 @@ public class WebRTCStreamer : MonoBehaviour
         {
             if (e.Track.Kind == TrackKind.Video)
             {
+                Debug.Log($"Received video track {receiveStreamCount}");
                 // Add track to MediaStream for receiver.
                 // This process triggers `OnAddTrack` event of `MediaStream`.
                 receiveStream.AddTrack(e.Track);
@@ -187,7 +234,8 @@ public class WebRTCStreamer : MonoBehaviour
 
         pc.OnIceCandidate = candidate =>
         {
-            pc.AddIceCandidate(candidate);
+            localIceCandidateCount++;
+            lastLocalIceCandidateRealtime = Time.realtimeSinceStartup;
             Debug.Log($"pc ICE candidate:\n {candidate.Candidate}");
         };
 
@@ -247,7 +295,6 @@ public class WebRTCStreamer : MonoBehaviour
 
     void OnLeftReceiverTransform(RTCRtpTransform transform, RTCTransformEvent e)
     {
-        Debug.Log("Left receiver transform");
         var data = e.Frame.GetData();
 
         var length = data.Length - metadataLength;
@@ -256,7 +303,7 @@ public class WebRTCStreamer : MonoBehaviour
 
         lock (leftMetadataOutputLock)
         {
-            leftTimestamp = System.BitConverter.ToUInt32(data.Skip(length).Reverse().ToArray(), 0);
+            leftTimestamp = ReadMetadataTimestamp(data, length);
         }
     }
 
@@ -270,7 +317,7 @@ public class WebRTCStreamer : MonoBehaviour
 
         lock (rightMetadataOutputLock)
         {
-            rightTimestamp = System.BitConverter.ToUInt32(data.Skip(length).Reverse().ToArray(), 0);
+            rightTimestamp = ReadMetadataTimestamp(data, length);
         }
     }
 
@@ -278,7 +325,7 @@ public class WebRTCStreamer : MonoBehaviour
     {
         // open the json file
         RTCConfiguration config = default;
-        config.iceServers = new RTCIceServer[]
+        var iceServers = new List<RTCIceServer>
         {
             new RTCIceServer {
                 urls = new string[] {
@@ -309,9 +356,10 @@ public class WebRTCStreamer : MonoBehaviour
                 username = turnServerUsername,
                 credential = turnServerPassword
             };
-            // append to iceServers
-            config.iceServers.Append(turnServer);
+            iceServers.Add(turnServer);
         }
+
+        config.iceServers = iceServers.ToArray();
 
         return config;
     }
@@ -321,26 +369,42 @@ public class WebRTCStreamer : MonoBehaviour
     {
         // get the offer from the firestore
         string url = $"https://firestore.googleapis.com/v1/projects/{projectID}/databases/(default)/documents/{password}/{robotID}";
-        UnityWebRequest www = UnityWebRequest.Get(url);
-        www.SendWebRequest();
-        while (!www.isDone) { }
-        if (www.result != UnityWebRequest.Result.Success)
+        string sdp = null;
+        float deadline = Time.realtimeSinceStartup + offerPollTimeoutSeconds;
+
+        while (Time.realtimeSinceStartup < deadline)
         {
-            Debug.LogError("Failed to get the offer from the firestore: " + www.error);
-            debugText.text = "Failed to get the offer from the firestore: " + www.error;
+            UnityWebRequest www = UnityWebRequest.Get(url);
+            yield return www.SendWebRequest();
+
+            if (www.result != UnityWebRequest.Result.Success)
+            {
+                Debug.LogError("Failed to get the offer from the firestore: " + www.error);
+                debugText.text = "Failed to get the offer from the firestore: " + www.error;
+                yield break;
+            }
+
+            Debug.Log("Offer received from Firestore: " + www.downloadHandler.text);
+            JSONNode json = JSON.Parse(www.downloadHandler.text);
+            string type = json["fields"]["type"]["stringValue"];
+
+            if (type == "offer")
+            {
+                sdp = json["fields"]["sdp"]["stringValue"];
+                break;
+            }
+
+            debugText.text = $"Waiting for fresh offer, current type: {type}";
+            yield return new WaitForSecondsRealtime(offerPollIntervalSeconds);
+        }
+
+        if (string.IsNullOrEmpty(sdp))
+        {
+            Debug.LogError("Timed out waiting for a fresh offer from Firestore.");
+            debugText.text = "Timed out waiting for a fresh offer from Firestore.";
             yield break;
         }
-        Debug.Log("Offer received from Firestore: " + www.downloadHandler.text);
-        // parse the offer
-        JSONNode json = JSON.Parse(www.downloadHandler.text);
-        string sdp = json["fields"]["sdp"]["stringValue"];
-        string type = json["fields"]["type"]["stringValue"];
-        if (type != "offer")
-        {
-            Debug.LogError("When reading the offer, the type is not offer: " + type);
-            debugText.text = "When reading the offer, the type is not offer: " + type;
-            yield break;
-        }
+
         // set the remote description
         RTCSessionDescription desc = new RTCSessionDescription();
         desc.type = RTCSdpType.Offer;
@@ -357,9 +421,42 @@ public class WebRTCStreamer : MonoBehaviour
         var op = pc.SetLocalDescription(ref desc);
         yield return op;
 
+        float iceGatheringDeadline = Time.realtimeSinceStartup + iceGatheringTimeoutSeconds;
+        int observedCandidateCount = localIceCandidateCount;
+        float quietDeadline = -1f;
+        while (Time.realtimeSinceStartup < iceGatheringDeadline)
+        {
+            if (localIceCandidateCount != observedCandidateCount)
+            {
+                observedCandidateCount = localIceCandidateCount;
+                quietDeadline = Time.realtimeSinceStartup + postIceCandidateQuietPeriodSeconds;
+            }
+
+            if (observedCandidateCount > 0 && Time.realtimeSinceStartup >= quietDeadline)
+            {
+                break;
+            }
+
+            yield return null;
+        }
+
+        if (observedCandidateCount == 0)
+        {
+            Debug.LogWarning("Sending answer without any local ICE candidates after timeout.");
+        }
+        else if (Time.realtimeSinceStartup < iceGatheringDeadline)
+        {
+            Debug.Log($"Sending answer after {observedCandidateCount} local ICE candidates.");
+        }
+        else
+        {
+            Debug.LogWarning($"Sending answer after timeout with {observedCandidateCount} local ICE candidates.");
+        }
+
         // send the answer to the firestore
         // for sdp make sure to escape the new line characters
-        string answerSdp = desc.sdp.Replace("\n", "\\n");
+        RTCSessionDescription localDescription = pc.LocalDescription;
+        string answerSdp = localDescription.sdp.Replace("\n", "\\n");
         string answerType = "answer";
         url = $"https://firestore.googleapis.com/v1/projects/{projectID}/databases/(default)/documents:commit";
         string jsonData = @$"
@@ -378,17 +475,17 @@ public class WebRTCStreamer : MonoBehaviour
         }}
         ";
 
-        www = new UnityWebRequest(url, "POST");
+        UnityWebRequest answerRequest = new UnityWebRequest(url, "POST");
         byte[] bodyRaw = System.Text.Encoding.UTF8.GetBytes(jsonData);
-        www.uploadHandler = new UploadHandlerRaw(bodyRaw);
-        www.downloadHandler = new DownloadHandlerBuffer();
-        www.SetRequestHeader("Content-Type", "application/json");
-        www.SendWebRequest();
-        while (!www.isDone) { }
-        if (www.result != UnityWebRequest.Result.Success)
+        answerRequest.uploadHandler = new UploadHandlerRaw(bodyRaw);
+        answerRequest.downloadHandler = new DownloadHandlerBuffer();
+        answerRequest.SetRequestHeader("Content-Type", "application/json");
+        answerRequest.SendWebRequest();
+        while (!answerRequest.isDone) { }
+        if (answerRequest.result != UnityWebRequest.Result.Success)
         {
-            Debug.LogError("Failed to send the answer to the firestore: " + www.error);
-            debugText.text = "Failed to send the answer to the firestore: " + www.error;
+            Debug.LogError("Failed to send the answer to the firestore: " + answerRequest.error);
+            debugText.text = "Failed to send the answer to the firestore: " + answerRequest.error;
             yield break;
         }
 
@@ -400,6 +497,9 @@ public class WebRTCStreamer : MonoBehaviour
         // close all coroutine
         StopAllCoroutines();
 
+        ReleaseDisplayTexture(ref leftDisplayTexture);
+        ReleaseDisplayTexture(ref rightDisplayTexture);
+
         receiveStream?.Dispose();
         dataChannel?.Dispose();
         pc?.Close();
@@ -409,32 +509,92 @@ public class WebRTCStreamer : MonoBehaviour
         pc = null;
     }
 
-    IEnumerator ConvertLeftFrame()
+    private uint ReadMetadataTimestamp(NativeArray<byte>.ReadOnly data, int metadataOffset)
     {
-        while (true)
+        if (metadataOffset < 0 || metadataOffset + metadataLength > data.Length)
         {
-            yield return new WaitForEndOfFrame();
-            Graphics.CopyTexture(
-                receivedLeftTexture, 0, 0,
-                0, 0, receivedLeftTexture.width, receivedLeftTexture.height,
-                leftTexture, 0, 0,
-                0, 0
-            );
+            return 0;
         }
+
+        return ((uint)data[metadataOffset] << 24) |
+               ((uint)data[metadataOffset + 1] << 16) |
+               ((uint)data[metadataOffset + 2] << 8) |
+               data[metadataOffset + 3];
     }
 
-    IEnumerator ConvertRightFrame()
+    private void EnsureDisplayTexture(ref RenderTexture displayTexture, Texture sourceTexture, RawImage image, Canvas canvas)
     {
-        while (true)
+        if (displayTexture != null &&
+            displayTexture.width == sourceTexture.width &&
+            displayTexture.height == sourceTexture.height)
         {
-            yield return new WaitForEndOfFrame();
-            Graphics.CopyTexture(
-                receivedRightTexture, 0, 0,
-                0, 0, receivedRightTexture.width, receivedRightTexture.height,
-                rightTexture, 0, 0,
-                0, 0
-            );
+            return;
         }
+
+        if (displayTexture != null)
+        {
+            displayTexture.Release();
+            Destroy(displayTexture);
+        }
+
+        displayTexture = new RenderTexture(sourceTexture.width, sourceTexture.height, 0, RenderTextureFormat.ARGB32)
+        {
+            name = $"{image.name}_Display",
+            useMipMap = false,
+            autoGenerateMips = false
+        };
+        displayTexture.Create();
+        image.texture = displayTexture;
+
+        Vector2 canvasSize = CalculateCanvasSize(videoVFOV, (float)sourceTexture.width / sourceTexture.height, videoPlaneDistance);
+        canvas.GetComponent<RectTransform>().sizeDelta = canvasSize;
+    }
+
+    private void RenderLatestFrame(
+        Texture sourceTexture,
+        RenderTexture displayTexture,
+        ref int renderedFrameId,
+        int receivedFrameId,
+        ref int renderedFramesThisSecond,
+        ref float lastRenderRealtime)
+    {
+        if (sourceTexture == null || displayTexture == null || renderedFrameId == receivedFrameId)
+        {
+            return;
+        }
+
+        Graphics.Blit(sourceTexture, displayTexture);
+        renderedFrameId = receivedFrameId;
+        renderedFramesThisSecond++;
+        lastRenderRealtime = Time.realtimeSinceStartup;
+    }
+
+    private void UpdateVideoStats()
+    {
+        videoStatsTimer += Time.unscaledDeltaTime;
+        if (videoStatsTimer < 1f)
+        {
+            return;
+        }
+
+        videoStatsTimer = 0f;
+
+        int leftDroppedFrames = Mathf.Max(0, leftReceivedFramesThisSecond - leftRenderedFramesThisSecond);
+        int rightDroppedFrames = Mathf.Max(0, rightReceivedFramesThisSecond - rightRenderedFramesThisSecond);
+        float now = Time.realtimeSinceStartup;
+        float leftReceiveAgeMs = leftLastReceiveRealtime > 0f ? (now - leftLastReceiveRealtime) * 1000f : -1f;
+        float rightReceiveAgeMs = rightLastReceiveRealtime > 0f ? (now - rightLastReceiveRealtime) * 1000f : -1f;
+        float leftDisplayAgeMs = leftLastRenderRealtime > 0f ? (now - leftLastRenderRealtime) * 1000f : -1f;
+        float rightDisplayAgeMs = rightLastRenderRealtime > 0f ? (now - rightLastRenderRealtime) * 1000f : -1f;
+
+        videoStatsText =
+            $"L rx {leftReceivedFramesThisSecond}/s tx {leftRenderedFramesThisSecond}/s drop {leftDroppedFrames} age {leftReceiveAgeMs:F0}/{leftDisplayAgeMs:F0}ms\n" +
+            $"R rx {rightReceivedFramesThisSecond}/s tx {rightRenderedFramesThisSecond}/s drop {rightDroppedFrames} age {rightReceiveAgeMs:F0}/{rightDisplayAgeMs:F0}ms";
+
+        leftReceivedFramesThisSecond = 0;
+        rightReceivedFramesThisSecond = 0;
+        leftRenderedFramesThisSecond = 0;
+        rightRenderedFramesThisSecond = 0;
     }
 
     // function to calculate canvas width and height from VFOV, distance and aspect ratio
@@ -513,9 +673,6 @@ public class WebRTCStreamer : MonoBehaviour
 
     void Update()
     {
-
-        
-
         (Vector2 leftPixel, Vector3 leftHit, Vector3 leftDirection, bool leftHitSuccess) = GetLeftEyeInfo();
         (Vector2 rightPixel, Vector3 rightHit, Vector3 rightDirection, bool rightHitSuccess) = GetRightEyeInfo();
 
@@ -632,7 +789,64 @@ public class WebRTCStreamer : MonoBehaviour
             {
                 rightArmVisual.SetActive(false);
             }
+        }
+
+        if (!string.IsNullOrEmpty(videoStatsText))
+        {
+            debugText.text = videoStatsText;
+        }
+    }
+
+    void LateUpdate()
+    {
+        bool shouldRenderThisFrame = true;
+        if (videoFrequency > 0f)
+        {
+            videoRenderTimer += Time.unscaledDeltaTime;
+            shouldRenderThisFrame = videoRenderTimer >= 1f / videoFrequency;
+            if (shouldRenderThisFrame)
+            {
+                videoRenderTimer = 0f;
+            }
+        }
+
+        if (shouldRenderThisFrame)
+        {
+            RenderLatestFrame(
+                latestLeftSourceTexture,
+                leftDisplayTexture,
+                ref leftRenderedFrameId,
+                leftReceivedFrameId,
+                ref leftRenderedFramesThisSecond,
+                ref leftLastRenderRealtime);
+
+            RenderLatestFrame(
+                latestRightSourceTexture,
+                rightDisplayTexture,
+                ref rightRenderedFrameId,
+                rightReceivedFrameId,
+                ref rightRenderedFramesThisSecond,
+                ref rightLastRenderRealtime);
+        }
+
+        UpdateVideoStats();
+    }
+
+    private void ReleaseDisplayTexture(ref RenderTexture displayTexture)
+    {
+        if (displayTexture == null)
+        {
+            return;
+        }
+
+        displayTexture.Release();
+        Destroy(displayTexture);
+        displayTexture = null;
+    }
+
+    void OnDisable()
+    {
+        ReleaseDisplayTexture(ref leftDisplayTexture);
+        ReleaseDisplayTexture(ref rightDisplayTexture);
     }
 }
-}
-
