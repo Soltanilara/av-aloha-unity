@@ -1,3 +1,4 @@
+using System.Collections;
 using UnityEngine;
 using UnityEngine.SceneManagement;
 using UnityEngine.UI;
@@ -60,7 +61,11 @@ public class TransitionPassthroughScene : MonoBehaviour
         }
         else
         {
-            videoVFOVInputField.text = "90";
+            // Default to the OAK stereo pair's own vertical FOV: displaying the video
+            // wider than the camera actually saw magnifies it, which makes the whole
+            // scene look closer and harder to fuse. Retune in-headset if the sender's
+            // rectification crops the view.
+            videoVFOVInputField.text = "55";
         }
 
         loadButton.onClick.AddListener(() => loadRobots());
@@ -68,6 +73,11 @@ public class TransitionPassthroughScene : MonoBehaviour
     }
 
     public void loadRobots()
+    {
+        StartCoroutine(LoadRobotsRoutine());
+    }
+
+    private IEnumerator LoadRobotsRoutine()
     {
         // Get projectID and password from input fields
         string projectID = projectIDInputField.text;
@@ -80,30 +90,32 @@ public class TransitionPassthroughScene : MonoBehaviour
         // Construct the Firestore REST API GET request URL
         string url = $"https://firestore.googleapis.com/v1/projects/{projectID}/databases/(default)/documents/{password}";
 
-        // Send the HTTP GET request
-        UnityWebRequest www = UnityWebRequest.Get(url);
-        www.SendWebRequest();
-
-        // Wait for the request to complete
-        while (!www.isDone) {}
-
-        // Check for errors
-        if (www.result != UnityWebRequest.Result.Success)
+        // Send the HTTP GET request and yield until it completes. Spinning on isDone
+        // here would block the render thread for the whole round trip, which on Quest
+        // shows up as a frozen menu and can trip an ANR.
+        using (UnityWebRequest www = UnityWebRequest.Get(url))
         {
-            Debug.LogError(www.error);
-            debugText.text = www.error;
-            return;
-        }
-        // Parse the JSON response
-        JSONNode json = JSON.Parse(www.downloadHandler.text);
+            yield return www.SendWebRequest();
 
-        // Fill the dropdown with the list of robots
-        robotDropdown.ClearOptions();
-        foreach (JSONNode robot in json["documents"])
-        {
-            string documentName = robot["name"];
-            string documentId = documentName.Substring(documentName.LastIndexOf("/") + 1);
-            robotDropdown.AddOptions(new List<TMP_Dropdown.OptionData>() { new TMP_Dropdown.OptionData(documentId) });
+            // Check for errors
+            if (www.result != UnityWebRequest.Result.Success)
+            {
+                Debug.LogError(www.error);
+                debugText.text = www.error;
+                yield break;
+            }
+
+            // Parse the JSON response
+            JSONNode json = JSON.Parse(www.downloadHandler.text);
+
+            // Fill the dropdown with the list of robots
+            robotDropdown.ClearOptions();
+            foreach (JSONNode robot in json["documents"])
+            {
+                string documentName = robot["name"];
+                string documentId = documentName.Substring(documentName.LastIndexOf("/") + 1);
+                robotDropdown.AddOptions(new List<TMP_Dropdown.OptionData>() { new TMP_Dropdown.OptionData(documentId) });
+            }
         }
     }
 

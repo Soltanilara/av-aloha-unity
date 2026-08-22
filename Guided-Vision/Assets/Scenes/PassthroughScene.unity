@@ -203,8 +203,22 @@ MonoBehaviour:
   dataFrequency: 20
   videoFrequency: 30
   videoPlaneDistance: 1
-  videoVFOV: 105
-  metadataLength: 4
+  videoVFOV: 55
+  videoScale: 1
+  stereoSeparationDeg: 0
+  stereoVerticalTrimDeg: 0
+  edgeFeather: 0.03
+  outerEdgeMask: 0
+  hudDistance: 2.5
+  gpuUndistort: 0
+  calibrationFile: oak_stereo_calibration.json
+  metadataLength: 0
+  enableFrameStats: 1
+  showStats: 1
+  staleFrameMs: 250
+  disableDynamicResolution: 1
+  useMaxDisplayFrequency: 1
+  isolateEyeLayers: 1
 --- !u!4 &116832836
 Transform:
   m_ObjectHideFlags: 0
