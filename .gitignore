@@ -1,2 +1,32 @@
+# Credentials -- never commit these.
 serviceAccountKey.json
 signalingSettings.json
+
+# Unity generated. All of this is rebuilt on open; none of it belongs in git.
+Guided-Vision/Library/
+Guided-Vision/Temp/
+Guided-Vision/Obj/
+Guided-Vision/obj/
+Guided-Vision/Logs/
+Guided-Vision/UserSettings/
+Guided-Vision/MemoryCaptures/
+Guided-Vision/Recordings/
+Guided-Vision/Builds/
+Guided-Vision/[Bb]uild/
+Guided-Vision/*.csproj
+Guided-Vision/*.sln
+Guided-Vision/*.user
+Guided-Vision/*.pidb
+Guided-Vision/*.booproj
+Guided-Vision/*.svd
+sysinfo.txt
+crashlytics-build.properties
+
+# Unity never ignores .meta files for assets that are tracked; it does need the
+# ones for ignored folders gone.
+Guided-Vision/Assets/AssetStoreTools*
+
+# Local scratch that has accumulated in the working tree.
+new_0/
+output.mp4
+webrtc_env/

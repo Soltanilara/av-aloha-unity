@@ -15,6 +15,25 @@ This script renders two separate video streams for each eye (left and right), wh
 ### APK Location
 - **APK**: `/TwoStreamGuidedVision.apk`
 
+
+## Vision pipeline
+
+The stereo video path — what the app expects from the OAK-camera sender, how frames get
+from the network to the display, the stereo geometry controls, and how to test and
+measure it — is documented in **[docs/VISION_PIPELINE.md](docs/VISION_PIPELINE.md)**.
+
+Key scripts:
+
+- **Receive + display + telemetry**: `Guided-Vision/Assets/Scripts/PassthroughScene/WebRTCStreamer.cs`
+- **Per-eye display shader**: `Guided-Vision/Assets/Resources/StereoEyeView.shader`
+- **Camera calibration loader**: `Guided-Vision/Assets/Scripts/PassthroughScene/StereoCalibration.cs`
+- **Calibration exporter** (run in the sender's environment): `tools/export_calibration_for_unity.py`
+
+Stereo comfort (image too close, images too far apart to fuse, edge flicker) is tuned
+**in the headset**: press the left controller's Menu button to enter tuning mode. See
+the doc for the controls. Note that `VideoPlaneDistance` deliberately has no effect on
+perceived depth — `stereoSeparationDeg` is the control that does.
+
 ## Modifying the Unity Project
 
 If you wish to modify the Unity project, follow these steps:
@@ -33,3 +52,6 @@ These settings should already be configured, but it’s important to check them:
 
 - **Stereo Rendering Mode**:  
   Go to `Project Settings` > `XR Plug-in Management` > `Oculus` > `Android` and ensure that **Stereo Rendering Mode** is set to `Multi Pass`. This allows rendering two separate images to the left and right eye.
+
+- **Layers**:  
+  Layers 8 and 9 must stay named `LeftEyeOnly` and `RightEyeOnly`. Each eye's video quad is moved onto its own layer and culled from the other eye's camera; without them both eyes draw both quads.
