@@ -30,3 +30,23 @@ Guided-Vision/Assets/AssetStoreTools*
 new_0/
 output.mp4
 webrtc_env/
+
+# Unity 6 renamed the generated solution, and leaves crash dumps beside the project.
+Guided-Vision/*.slnx
+Guided-Vision/mono_crash.*
+
+# Crash-recovery scenes Unity drops into Assets/ after an editor crash. They are stale
+# copies of real scenes and do nothing but throw import errors. Safe to delete.
+Guided-Vision/Assets/_Recovery/
+Guided-Vision/Assets/_Recovery.meta
+
+# Meta XR dev-agent pairing settings. Contains a local access token and this machine's
+# LAN address, and is regenerated per machine -- not something to share.
+Guided-Vision/Assets/Resources/DevAgentSettings.asset
+Guided-Vision/Assets/Resources/DevAgentSettings.asset.meta
+
+# TextMesh Pro samples: 6.4 MB, nothing in this project references any of the 148
+# assets, and they restore from Window > TextMeshPro > Import TMP Examples and Extras.
+# The TMP *essentials* (Resources, Shaders, Fonts) stay tracked -- those are used.
+Guided-Vision/Assets/TextMesh Pro/Examples & Extras/
+Guided-Vision/Assets/TextMesh Pro/Examples & Extras.meta

@@ -36,6 +36,17 @@ Shader "GuidedVision/StereoEyeView"
         _OuterMask ("Outer edge mask", Range(0, 0.5)) = 0.0
         _OuterSign ("Outer side: -1 left eye, +1 right eye", Float) = -1
 
+        // Foveal atlas (docs/PLAN.md section 5). All default to the inert values, so
+        // a caller that never sets them gets exactly the pre-foveation behaviour.
+        _Foveated ("Atlas carries a foveal band", Float) = 0
+        _FoveaRect ("centre.xy, extent.zw in source uv (GL convention)", Vector) = (0.5,0.5,0,0)
+        _FoveaFeather ("Foveal blend ring", Range(0.001, 0.5)) = 0.15
+        _LayerSpans ("coarse u,v span then fovea u,v span, as canvas fractions", Vector) = (1,0.5,1,0.5)
+        _FoveaOutline ("Draw the foveal patch border", Float) = 0
+        _FoveaOutlineColor ("Foveal border colour", Color) = (0.35,0.9,0.45,0.85)
+        _FoveaOutlineWidth ("Foveal border width, in source uv", Range(0.0005, 0.02)) = 0.003
+        _SrgbDecode ("Source holds sRGB-encoded bits in a linear texture", Float) = 0
+
         _UndistortMode ("0 off, 1 pinhole, 2 fisheye", Float) = 0
         _HalfTanX ("tan(HFOV/2)", Float) = 1
         _HalfTanY ("tan(VFOV/2)", Float) = 1
@@ -113,6 +124,16 @@ Shader "GuidedVision/StereoEyeView"
             float _OuterMask;
             float _OuterSign;
 
+            float _Foveated;
+            float4 _FoveaRect;
+            float _FoveaFeather;
+            float4 _LayerSpans;
+            float _FoveaOutline;
+            float4 _FoveaOutlineColor;
+            float _FoveaOutlineWidth;
+            float _SrgbDecode;
+            float4 _MainTex_TexelSize;
+
             float _UndistortMode;
             float _HalfTanX;
             float _HalfTanY;
@@ -186,6 +207,92 @@ Shader "GuidedVision/StereoEyeView"
                 return src;
             }
 
+            // Resolve a source-image uv against the transmitted atlas.
+            //
+            // The atlas is one canvas carrying two bands: the whole field downscaled,
+            // and a native-resolution crop centred on gaze. In GL uv terms the coarse
+            // band is the upper half (v in [0.5, 1]) because it is the upper half of
+            // the image, and the foveal band is the lower half.
+            //
+            // Each layer sits in the top-left of its band and fills only part of it;
+            // the rest is black. Shrinking the coarse layer is how the periphery is
+            // made genuinely low-resolution, and it works without ever changing the
+            // canvas size -- so the decoder is never reconfigured.
+            //
+            // _LayerSpans holds each layer's stored size as a fraction of the whole
+            // canvas (coarse u,v then fovea u,v), computed from the exact pixel sizes
+            // the packet header carries. Exact sizes, not a quantised scale: rounding
+            // here makes the sampler read into the black padding beside the layer.
+            //
+            // Where the display pixel falls inside the crop we cross-fade to it over a
+            // soft ring. A hard edge would be far more visible than the resolution
+            // difference itself -- the eye finds the seam instantly.
+            float3 SampleAtlas(float2 src)
+            {
+                // Single exit, initialised up front: early returns here make the
+                // cross-compiler warn about uninitialised paths, and skipping the
+                // foveal fetch per-pixel would trade one fetch for a divergent branch,
+                // which is the worse deal on a tiler. _Foveated is a uniform, so the
+                // outer branch is coherent across the whole draw.
+                float3 outc = float3(0.0, 0.0, 0.0);
+
+                if (_Foveated > 0.5)
+                {
+                    // Half a texel of inset: bilinear sampling right on a layer's
+                    // edge would otherwise pull in the black padding beside it.
+                    float2 inset = _MainTex_TexelSize.xy * 0.5;
+
+                    float2 cSpan = _LayerSpans.xy;
+                    float2 cuv = float2(src.x * cSpan.x,
+                                        (1.0 - cSpan.y) + cSpan.y * src.y);
+                    cuv = clamp(cuv,
+                                float2(inset.x, 1.0 - cSpan.y + inset.y),
+                                float2(cSpan.x - inset.x, 1.0 - inset.y));
+                    float3 coarse = tex2D(_MainTex, cuv).rgb;
+
+                    float2 extent = max(_FoveaRect.zw, 1e-5);
+                    float2 t = (src - (_FoveaRect.xy - extent * 0.5)) / extent;
+
+                    float f = max(_FoveaFeather, 1e-4);
+                    float2 e = smoothstep(0.0, f, t) * smoothstep(0.0, f, 1.0 - t);
+                    float w = saturate(e.x * e.y);
+
+                    float2 fSpan = _LayerSpans.zw;
+                    float2 ts = saturate(t);
+                    float2 fuv = float2(ts.x * fSpan.x,
+                                        (0.5 - fSpan.y) + fSpan.y * ts.y);
+                    fuv = clamp(fuv,
+                                float2(inset.x, 0.5 - fSpan.y + inset.y),
+                                float2(fSpan.x - inset.x, 0.5 - inset.y));
+                    float3 fovea = tex2D(_MainTex, fuv).rgb;
+
+                    outc = lerp(coarse, fovea, w);
+
+                    // A diagnostic border on the patch. Foveation is meant to be
+                    // invisible when it works, which makes it very hard to tell a
+                    // correctly blended patch from a fovea rect that is not moving at
+                    // all -- both simply look like a picture. The outline answers "is
+                    // the crop where I am looking?" directly. Off by default; this is
+                    // a tool for tuning, not something to fly with.
+                    if (_FoveaOutline > 0.5)
+                    {
+                        // Border width is given in source uv so it stays a constant
+                        // apparent thickness however large the patch is.
+                        float2 bw = _FoveaOutlineWidth / extent;
+                        float2 d = min(t, 1.0 - t);          // 0 at an edge, 0.5 mid
+                        float inside = step(0.0, d.x) * step(0.0, d.y);
+                        float core = step(bw.x, d.x) * step(bw.y, d.y);
+                        outc = lerp(outc, _FoveaOutlineColor.rgb,
+                                    inside * (1.0 - core) * _FoveaOutlineColor.a);
+                    }
+                }
+                else
+                {
+                    outc = tex2D(_MainTex, src).rgb;
+                }
+                return outc;
+            }
+
             float EdgeMask(float2 uv)
             {
                 float f = max(_EdgeFeather, 1e-4);
@@ -211,7 +318,17 @@ Shader "GuidedVision/StereoEyeView"
                 float inside = step(0.0, src.x) * step(src.x, 1.0)
                              * step(0.0, src.y) * step(src.y, 1.0);
 
-                fixed4 col = tex2D(_MainTex, saturate(src)) * i.color;
+                float3 rgb = SampleAtlas(saturate(src));
+
+                // The MediaCodec path blits the decoder's output verbatim into an
+                // RGBA8 texture, so the bits are sRGB-encoded but the texture is
+                // declared linear. Converting here keeps that decision explicit
+                // instead of depending on how a driver treats an external texture's
+                // sRGB state. The WebRTC path leaves this at 0 and is unaffected.
+                if (_SrgbDecode > 0.5)
+                    rgb = GammaToLinearSpace(rgb);
+
+                fixed4 col = fixed4(rgb, 1.0) * i.color;
                 col.a *= inside * EdgeMask(i.texcoord);
                 return col;
             }
