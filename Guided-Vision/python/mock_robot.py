@@ -36,7 +36,7 @@ from gvlink.protocol import (INPUT_HEAD_VALID, BUTTON_ONE, BUTTON_TWO, CODEC_H26
                              CODEC_NAMES, DEFAULT_PORTS, EYE_LEFT, EYE_RIGHT,
                              MTU_PAYLOAD, MTU_PAYLOAD_TUNNEL, HeadsetInput)
 from gvlink.stream import EyeStreamSender, make_udp_socket
-from gvlink.ui import HeadsetUi
+from gvlink.ui import HeadsetUi, button, choice, rng, toggle
 
 
 def parse_wh(s: str) -> tuple[int, int]:
@@ -219,9 +219,9 @@ def main() -> int:
     ap.add_argument("--auto-gaze", action="store_true",
                     help="sweep the fovea when no real gaze is arriving")
     ap.add_argument("--ui-demo", action="store_true",
-                    help="publish a moving guide and a couple of markers, so the "
-                         "headset's ui/* rendering can be checked without writing "
-                         "robot code first")
+                    help="publish a moving guide, a couple of markers and a "
+                         "robot-defined session menu, so the headset's ui/* rendering "
+                         "can be checked without writing robot code first")
     ap.add_argument("--viser", action="store_true",
                     help="serve a live 3D view of the headset, hands and controllers "
                          "(needs the viz extra: uv sync --extra viz)")
@@ -426,6 +426,65 @@ def main() -> int:
 
     ui.on_guide_reached(_reached)
 
+    # The robot-defined session menu. This is the part worth trying on a device: these
+    # rows are declared here, in Python, and appear in the headset's menu without the
+    # Unity app knowing what any of them mean. Adding a control to a real robot is
+    # editing this list.
+    menu_state = {"mode": "cartesian", "speed": 0.5, "gripper": False, "recording": False}
+
+    def publish_menu():
+        ui.menu([
+            button("rec", "Stop recording" if menu_state["recording"] else "Record episode"),
+            toggle("grip", "Gripper open", menu_state["gripper"]),
+            choice("mode", "Control mode", ["cartesian", "joint"], menu_state["mode"]),
+            rng("spd", "Speed", 0.1, 1.0, 0.1, menu_state["speed"], fmt="{0:0.0}x"),
+            button("home", "Home the arms", enabled=not menu_state["recording"]),
+        ])
+
+    def on_menu_event(e):
+        if not isinstance(e, dict):
+            return
+        mid, value = e.get("id"), e.get("value")
+        print(f"menu: {mid} = {value!r}")
+        if mid == "rec":
+            menu_state["recording"] = not menu_state["recording"]
+            ui.toast("recording" if menu_state["recording"] else "stopped", "info", 1.5)
+        elif mid == "grip":
+            menu_state["gripper"] = bool(value)
+        elif mid == "mode":
+            menu_state["mode"] = str(value)
+        elif mid == "spd":
+            menu_state["speed"] = float(value)
+        elif mid == "home":
+            ui.toast("homing", "warn", 2.0)
+        # Re-publish so the headset's optimistic local value is corrected, and so rows
+        # that depend on state -- the record label, whether Home is allowed -- follow.
+        publish_menu()
+
+    ui.on_menu_event(on_menu_event)
+
+    def on_headset_state(s):
+        """
+        Taking the headset off is a safety event, not telemetry: the poses keep arriving
+        from a device on a desk, so without this a robot goes on tracking a wrist nobody
+        is wearing.
+        """
+        if not isinstance(s, dict):
+            return
+        worn = bool(s.get("mounted", True))
+        if worn != on_headset_state.worn:
+            on_headset_state.worn = worn
+            print("headset: " + ("put on" if worn else "TAKEN OFF -- a robot should stop here"))
+        if viz is not None:
+            viz.set_state(s)
+        batt = s.get("batt")
+        if isinstance(batt, (int, float)) and 0 <= batt < 0.15 and not on_headset_state.warned:
+            on_headset_state.warned = True
+            print(f"headset battery {batt * 100:.0f}% -- session will not last")
+    on_headset_state.worn = True
+    on_headset_state.warned = False
+    ui.on_state(on_headset_state)
+
     def _rotate(q, v):
         """Rotate v by unit quaternion q=(x,y,z,w). Handedness-agnostic."""
         qx, qy, qz, qw = q
@@ -515,7 +574,16 @@ def main() -> int:
     def _camera_params(_data):
         return camera.to_wire()
 
-    link.on_session(lambda s: s and link.publish("camera/params", camera.to_wire()))
+    def on_new_session(s):
+        if not s:
+            return
+        link.publish("camera/params", camera.to_wire())
+        # Rows have to be (re)published per session: the headset's list is whatever it
+        # was last told, and a headset that just connected has been told nothing.
+        if args.ui_demo:
+            publish_menu()
+
+    link.on_session(on_new_session)
 
     try:
         while True:

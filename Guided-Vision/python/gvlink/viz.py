@@ -138,6 +138,8 @@ class HeadsetViz:
         self._anchor = None                 # (position, yaw quaternion) or None
         self._last_head = None
         self._metrics: dict = {}
+        self._state: dict = {}
+        self._md_device = None
         self._panel_text: dict = {}
         self._panel_at = 0.0
         self._seq_at = None
@@ -169,6 +171,10 @@ class HeadsetViz:
     def set_metrics(self, metrics: dict) -> None:
         """Stream numbers from the sender, shown beside the poses they belong to."""
         self._metrics = dict(metrics or {})
+
+    def set_state(self, state: dict) -> None:
+        """The latest `hs/state` from the headset -- battery, wear, frame health."""
+        self._state = dict(state or {})
 
     def _push(self, handle, text: str) -> None:
         """Only send when it changed. Every assignment is a websocket message, and at
@@ -233,6 +239,27 @@ class HeadsetViz:
             self._push(self._md_stream, "```\n" + "\n".join(
                 f"{k:<10} {v}" for k, v in m.items()) + "\n```")
 
+        s = self._state
+        if s:
+            batt = s.get("batt")
+            batt_s = "unknown" if not isinstance(batt, (int, float)) or batt < 0 else \
+                     f"{self._bar(batt)} {batt * 100:3.0f}%"
+            conf = s.get("hand_conf") or {}
+            worn = s.get("mounted", True)
+            rows = ["```",
+                    f"worn      {'yes' if worn else 'NO -- headset is off'}",
+                    f"battery   {batt_s}",
+                    f"input     {s.get('src', '?')}",
+                    f"deadman   {s.get('deadman', '?')}"
+                    f"{'  HELD' if s.get('deadman_held') else ''}",
+                    f"display   {s.get('fps', 0):.0f} / {s.get('hz', 0):.0f} Hz"
+                    f"   {s.get('missed', 0)} missed",
+                    f"eye trk   {'yes' if s.get('eye_tracking') else 'no'}",
+                    f"origin    epoch {s.get('origin_epoch', 0)}",
+                    f"hand conf l {float(conf.get('l', 0)):.2f}  r {float(conf.get('r', 0)):.2f}",
+                    "```"]
+            self._push(self._md_device, "\n".join(rows))
+
     def _build_gui(self) -> None:
         with self.server.gui.add_folder("Headset"):
             self._md_head = self.server.gui.add_markdown("```\nwaiting\n```")
@@ -242,6 +269,8 @@ class HeadsetViz:
             self._md_hands = self.server.gui.add_markdown("```\nwaiting\n```")
         with self.server.gui.add_folder("Stream"):
             self._md_stream = self.server.gui.add_markdown("```\nwaiting\n```")
+        with self.server.gui.add_folder("Device"):
+            self._md_device = self.server.gui.add_markdown("```\nwaiting\n```")
         with self.server.gui.add_folder("View"):
             centre = self.server.gui.add_button("Centre on headset")
             reset = self.server.gui.add_button("Clear anchor")

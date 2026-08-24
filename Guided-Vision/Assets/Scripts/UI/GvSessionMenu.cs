@@ -59,6 +59,9 @@ public class GvSessionMenu : MonoBehaviour
     private GvStereoDisplay display;
     private GvRobotSession session;
     private GvHandTracking handTracking;
+    private GvSceneCommands sceneCommands;
+    private GvHeadsetState headsetState;
+    private GvInputUplink uplink;
 
     private Canvas summonCanvas;
     private RectTransform summonFill;
@@ -106,9 +109,17 @@ public class GvSessionMenu : MonoBehaviour
     {
         display = FindAnyObjectByType<GvStereoDisplay>(FindObjectsInactive.Include);
         session = GvRobotSession.Instance;
+        sceneCommands = FindAnyObjectByType<GvSceneCommands>(FindObjectsInactive.Include);
+        headsetState = FindAnyObjectByType<GvHeadsetState>(FindObjectsInactive.Include);
+        uplink = FindAnyObjectByType<GvInputUplink>(FindObjectsInactive.Include);
         head = GvXr.Head();
         Build();
         SetOpen(false);
+
+        // The robot can add, remove or relabel its rows at any moment, including while
+        // the menu is open and being looked at.
+        if (sceneCommands != null)
+            sceneCommands.RowsChanged += OnRobotRowsChanged;
     }
 
     // ------------------------------------------------------------------ chrome
@@ -208,6 +219,89 @@ public class GvSessionMenu : MonoBehaviour
         summonFill.sizeDelta = new Vector2(Mathf.Clamp01(progress) * 292f, -8f);
     }
 
+    private void OnDestroy()
+    {
+        if (sceneCommands != null)
+            sceneCommands.RowsChanged -= OnRobotRowsChanged;
+    }
+
+    /// <summary>
+    /// Rebuild for a new robot row set, keeping the operator's place.
+    ///
+    /// Selection is restored by row *label* rather than by index: the robot is free to
+    /// insert a row above the one being looked at, and an index would quietly move the
+    /// highlight onto something else between the operator deciding to press it and
+    /// pressing it.
+    /// </summary>
+    private void OnRobotRowsChanged()
+    {
+        string was = selected >= 0 && selected < items.Count ? items[selected].Label : null;
+        BuildItems();
+        if (was == null)
+            return;
+        for (int i = 0; i < items.Count; i++)
+        {
+            if (items[i].Label == was && Selectable(i))
+            {
+                selected = i;
+                return;
+            }
+        }
+    }
+
+    /// <summary>
+    /// Turn the robot's declared rows into menu rows.
+    ///
+    /// The headset does not know what any of them mean; it renders the control and
+    /// reports the interaction. Values move locally first so the row responds at once,
+    /// and the robot corrects anything it disagrees with by re-publishing the list.
+    /// </summary>
+    private void AddRobotRows()
+    {
+        if (sceneCommands == null || sceneCommands.RobotRows.Count == 0)
+            return;
+
+        items.Add(new GvMenuItem { Label = "", IsHeader = true });
+        foreach (var row in sceneCommands.RobotRows)
+        {
+            var r = row;                    // captured per iteration, not per loop
+            var item = new GvMenuItem
+            {
+                Label = r.Label,
+                Value = () => r.Display(),
+                Enabled = () => r.Enabled,
+            };
+
+            if (r.Type == GvRobotRow.TypeButton)
+            {
+                item.Activate = () =>
+                {
+                    if (!r.Enabled)
+                        return;
+                    sceneCommands.PublishRowEvent(r);
+                    // A button whose effect is entirely on the robot gives the operator
+                    // nothing to see. Acknowledge the press locally so it is never
+                    // ambiguous whether it registered.
+                    GvToast.Post(r.Label, "info", 1.2f);
+                };
+            }
+            else
+            {
+                item.Adjust = dir =>
+                {
+                    if (r.Enabled && r.Adjust(dir))
+                        sceneCommands.PublishRowEvent(r);
+                };
+                item.Activate = () =>
+                {
+                    if (r.Enabled && r.Adjust(1))
+                        sceneCommands.PublishRowEvent(r);
+                };
+            }
+            items.Add(item);
+        }
+    }
+
     private void BuildItems()
     {
         foreach (var it in items)
@@ -263,14 +357,13 @@ public class GvSessionMenu : MonoBehaviour
                     Value = () => string.Format("{0:0} Hz", display.DisplayHz),
                     Adjust = CycleFrequency,
                 });
-            var scene = FindAnyObjectByType<GvSceneCommands>(FindObjectsInactive.Include);
-            if (scene != null)
+            if (sceneCommands != null)
                 items.Add(new GvMenuItem
                 {
                     Label = "Show controllers / hands",
-                    Value = () => scene.showTrackedHardware ? "on" : "off",
-                    Adjust = _ => scene.showTrackedHardware = !scene.showTrackedHardware,
-                    Activate = () => scene.showTrackedHardware = !scene.showTrackedHardware,
+                    Value = () => sceneCommands.showTrackedHardware ? "on" : "off",
+                    Adjust = _ => sceneCommands.showTrackedHardware = !sceneCommands.showTrackedHardware,
+                    Activate = () => sceneCommands.showTrackedHardware = !sceneCommands.showTrackedHardware,
                 });
             items.Add(new GvMenuItem
             {
@@ -287,6 +380,25 @@ public class GvSessionMenu : MonoBehaviour
                 Activate = () => display.foveaOutline = !display.foveaOutline,
             });
         }
+
+        if (uplink != null)
+            items.Add(new GvMenuItem
+            {
+                Label = "Deadman control",
+                Value = () => uplink.deadmanSource.ToString().ToLowerInvariant(),
+                Adjust = CycleDeadman,
+                Activate = () => CycleDeadman(1),
+            });
+
+        if (headsetState != null)
+            items.Add(new GvMenuItem
+            {
+                Label = "Recentre tracking",
+                Value = () => "epoch " + headsetState.OriginEpoch,
+                Activate = () => { headsetState.Recenter(); Place(); },
+            });
+
+        AddRobotRows();
 
         items.Add(new GvMenuItem { Label = "", IsHeader = true });
         items.Add(new GvMenuItem
@@ -366,6 +478,23 @@ public class GvSessionMenu : MonoBehaviour
         // choice survive a reconnect rather than being undone by the next restart.
         display.maxDisplayFrequency = freqs[i];
         display.ApplyDisplayFrequency();
+    }
+
+    /// <summary>
+    /// Step the deadman policy.
+    ///
+    /// In the menu rather than a build setting because which control is right depends on
+    /// the task and on whether the operator is holding anything -- and because an
+    /// operator who cannot find the deadman needs to be able to look at what it is set
+    /// to from inside the headset, not read a field in the Inspector.
+    /// </summary>
+    private void CycleDeadman(int dir)
+    {
+        if (uplink == null)
+            return;
+        int n = System.Enum.GetValues(typeof(GvDeadmanSource)).Length;
+        int i = ((int)uplink.deadmanSource + (dir >= 0 ? 1 : -1) + n) % n;
+        uplink.deadmanSource = (GvDeadmanSource)i;
     }
 
     private void Relayout()

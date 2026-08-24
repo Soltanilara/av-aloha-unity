@@ -54,6 +54,16 @@ public sealed class GvRobotLink : IDisposable
     public long MessagesOut { get; private set; }
     public string LastError { get; private set; }
 
+    /// <summary>
+    /// The robot handed the operator slot to another headset.
+    ///
+    /// Set instead of retrying. Being replaced is a decision somebody made, not a
+    /// dropped link, and redialling would take the slot straight back from whoever now
+    /// has it -- two headsets kicking each other off forever, neither getting a stable
+    /// stream. Reconnecting deliberately from the menu clears this.
+    /// </summary>
+    public bool Displaced { get; private set; }
+
     /// <summary>Raised on the main thread from Pump().</summary>
     public event Action<bool> ConnectionChanged;
 
@@ -66,6 +76,7 @@ public sealed class GvRobotLink : IDisposable
     /// </summary>
     public void Connect(string host, int port, Dictionary<string, object> session)
     {
+        Displaced = false;
         if (running)
             return;
         this.host = host;
@@ -149,6 +160,19 @@ public sealed class GvRobotLink : IDisposable
                     Debug.LogError($"GvRobotLink: reply handler for '{topic}' threw: {e}");
                 }
                 continue;
+            }
+
+            if (topic == TopicSession)
+            {
+                var info = data as Dictionary<string, object>;
+                if (info != null && GvMsgPack.GetBool(info, "displaced", false))
+                {
+                    Displaced = true;
+                    Debug.Log("GvRobotLink: another headset took over this robot.");
+                    GvToast.Post("Another headset took over this robot", "warn", 6f);
+                    Disconnect();
+                    return;
+                }
             }
 
             if (!subs.TryGetValue(topic, out var list))

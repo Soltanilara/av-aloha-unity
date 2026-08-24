@@ -260,6 +260,18 @@ INPUT_RIGHT_VALID = 1 << 3
 INPUT_HAS_EXTRAS = 1 << 4
 INPUT_HAS_HANDS = 1 << 5
 
+# The operator is holding the deadman control.
+#
+# In the packet rather than on the control channel, and deliberately so: it must be
+# current and it must fail safe. If the uplink stops arriving the bit stops arriving
+# with it, so a robot that gates motion on "deadman set in a packet newer than 100 ms"
+# stops on its own, with no timeout logic to get wrong and no "released" message that
+# can be the thing that fails to be delivered.
+#
+# Set on every packet when the operator has configured no deadman control; `hs/state`
+# then reports `deadman: "off"`, so "held" and "not in use" stay distinguishable.
+INPUT_DEADMAN = 1 << 6
+
 # Finger order in the pinch array, and the joint order the headset sends.
 FINGERS = ("thumb", "index", "middle", "ring", "pinky")
 
@@ -410,6 +422,10 @@ class HeadsetInput:
     gaze_r: tuple = (0.5, 0.5)
     gaze_confidence: float = 0.0
 
+    # Mirrors INPUT_DEADMAN. Kept as its own field rather than left in `flags` so robot
+    # code reads `inp.deadman` instead of remembering a bit number.
+    deadman: bool = False
+
     # Present only when the runtime is tracking hands. None means a controller session.
     hand_l: HandState = None
     hand_r: HandState = None
@@ -459,6 +475,8 @@ class HeadsetInput:
             return (*c.pos, *c.rot, *c.stick, c.trigger, c.grip, c.buttons & 0xFF, 0)
 
         flags = self.flags
+        if self.deadman:
+            flags |= INPUT_DEADMAN
         hands = b""
         if self.hand_l is not None or self.hand_r is not None:
             hands = ((self.hand_l or HandState()).pack()
@@ -521,5 +539,6 @@ class HeadsetInput:
             gaze_l=(f[_F_GAZE], f[_F_GAZE + 1]),
             gaze_r=(f[_F_GAZE + 2], f[_F_GAZE + 3]),
             gaze_confidence=f[_F_GAZE + 4],
+            deadman=bool(flags & INPUT_DEADMAN),
             hand_l=hand_l, hand_r=hand_r, extras=extras,
         )

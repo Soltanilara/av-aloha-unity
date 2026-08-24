@@ -376,6 +376,18 @@ public class GvStereoDisplay : MonoBehaviour
         }
     }
 
+    /// <summary>Rendered frames per second, averaged over the last reporting window.</summary>
+    public float Fps => frameStats.Fps;
+
+    /// <summary>
+    /// Frames in the last window that took longer than 1.5 display intervals.
+    ///
+    /// Exposed so the robot can log rendering health alongside an episode. That is how
+    /// you find out afterwards that the one bad demonstration was judder and not the
+    /// policy -- a question that is unanswerable once the session is over.
+    /// </summary>
+    public int MissedFrames => frameStats.Missed;
+
     /// <summary>
     /// Pick the highest offered rate that is not above the ceiling.
     ///

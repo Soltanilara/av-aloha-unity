@@ -26,11 +26,13 @@ from gvlink.protocol import HandState
 from gvlink.ratecontrol import BitrateController
 from gvlink.pattern import make_chart
 from gvlink.protocol import (BUTTON_ONE, BUTTON_STICK, BUTTON_TWO, EYE_LEFT,
-                             INPUT_GAZE_VALID, INPUT_HEAD_VALID, INPUT_LEFT_VALID,
+                             INPUT_DEADMAN, INPUT_GAZE_VALID, INPUT_HEAD_VALID,
+                             INPUT_LEFT_VALID,
                              INPUT_SIZE, HeadsetInput, Reassembler, VideoHeader,
                              fragment, now_us)
-from gvlink.robotlink import ControlClient, RobotLink
-from gvlink.ui import HeadsetUi
+from gvlink.robotlink import (ROLE_OBSERVER, ROLE_OPERATOR, ControlClient,
+                              RobotLink)
+from gvlink.ui import HeadsetUi, button, choice, rng, toggle
 from gvlink.stream import EyeStreamReceiver, EyeStreamSender, make_udp_socket
 
 FAILS: list[str] = []
@@ -51,7 +53,13 @@ def _free_port() -> int:
 
 
 def _await(fn, timeout: float = 3.0):
-    """Poll until fn() returns something truthy, or give up. Returns None on timeout."""
+    """
+    Poll until fn() returns something other than None, or give up.
+
+    Note the condition: **not None**, not truthy. Pass a predicate that returns False
+    and this hands it straight back on the first poll without waiting for anything --
+    which reads in the output as a race the code lost. Use `_until` for booleans.
+    """
     deadline = time.time() + timeout
     while time.time() < deadline:
         v = fn()
@@ -59,6 +67,16 @@ def _await(fn, timeout: float = 3.0):
             return v
         time.sleep(0.005)
     return None
+
+
+def _until(pred, timeout: float = 3.0) -> bool:
+    """Poll until pred() is true. Returns whether it became true in time."""
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        if pred():
+            return True
+        time.sleep(0.005)
+    return False
 
 
 def spans(header, canvas):
@@ -637,6 +655,130 @@ def main() -> int:
           canvas is not None and canvas.size > 0)
     tx_sock.close()
     rx_sock.close()
+
+    print("concurrent viewers")
+    # The accept loop used to serve each connection inline, so a single attached client
+    # blocked accept() entirely and the next one waited in the backlog -- indistinguishable
+    # from a robot that was not running. Video still goes to exactly one operator, because
+    # it is unicast UDP, but attaching must never be a race for the only slot.
+    port = _free_port()
+    link = RobotLink(port=port).start()
+    seen_a, seen_b = [], []
+    try:
+        a = ControlClient("127.0.0.1", port, video_port=15552, name="headset",
+                          role=ROLE_OPERATOR)
+        a.subscribe("arm/state", seen_a.append)
+        a.start()
+        op = _await(lambda: link.session)
+        check("an operator is seen", op is not None)
+
+        b = ControlClient("127.0.0.1", port, video_port=15999, name="viz",
+                          role=ROLE_OBSERVER)
+        b.subscribe("arm/state", seen_b.append)
+        b.start()
+        both = _until(lambda: link.viewers == 2 and len(link.sessions) == 2)
+        check("an observer attaches while the operator is still connected", both,
+              f"viewers={link.viewers}")
+
+        check("  and does not become the video destination",
+              link.session is not None and link.session.id == op.id,
+              f"session={link.session}")
+        check("  and does not change where video is sent",
+              link.session is not None and link.session.video_port == 15552)
+
+        link.publish("arm/state", {"q": [1, 2, 3]})
+        got = _until(lambda: seen_a and seen_b)
+        check("a publish reaches both", got,
+              f"operator={len(seen_a)} observer={len(seen_b)}")
+
+        # An observer leaving must not read as the session ending, or the robot stops
+        # streaming to an operator who is still wearing the headset.
+        b.stop()
+        gone = _until(lambda: link.viewers == 1)
+        check("the observer leaving does not end the session",
+              gone and link.session is not None and link.session.id == op.id)
+
+        # Video is unicast, so a second operator does have to displace the first -- a
+        # headset reconnecting has to be able to replace its own stale session.
+        c = ControlClient("127.0.0.1", port, video_port=16001, name="headset2",
+                          role=ROLE_OPERATOR).start()
+        moved = _await(lambda: link.session if (link.session is not None
+                                                and link.session.id != op.id) else None)
+        check("a second operator displaces the first",
+              moved is not None and moved.video_port == 16001)
+
+        # And the displaced one must stand down rather than redial. Without being told
+        # why it was dropped it reconnects, takes the slot straight back, and the two
+        # clients kick each other off forever.
+        stood_down = _until(lambda: a.displaced and not a.connected)
+        check("  and the displaced one stands down instead of fighting for the slot",
+              stood_down, f"displaced={a.displaced} connected={a.connected}")
+        settled = link.session
+        time.sleep(0.4)
+        check("  so the new operator keeps the slot",
+              link.session is not None and settled is not None
+              and link.session.id == settled.id)
+        c.stop()
+        a.stop()
+    finally:
+        link.stop()
+
+    print("robot-defined menu rows")
+    port = _free_port()
+    link = RobotLink(port=port).start()
+    events = []
+    try:
+        client = ControlClient("127.0.0.1", port, name="headset")
+        rows_seen = []
+        client.subscribe("ui/menu", rows_seen.append)
+        client.start()
+        _await(lambda: link.session)
+
+        ui = HeadsetUi(link)
+        ui.on_menu_event(events.append)
+        ui.menu([button("rec", "Record episode"),
+                 toggle("grip", "Gripper open", True),
+                 choice("mode", "Control mode", ["cartesian", "joint"]),
+                 rng("spd", "Speed", 0.1, 1.0, 0.1, 0.5, fmt="{0:0.0}x")])
+
+        got = _await(lambda: rows_seen[0] if rows_seen else None)
+        check("the row list reaches the headset", got is not None)
+        if got:
+            rows = got["rows"]
+            check("  all four row types survive msgpack", len(rows) == 4,
+                  ", ".join(r["type"] for r in rows))
+            check("  every row carries an id, so it can be reported back",
+                  all(r.get("id") for r in rows))
+            check("  a range row carries its bounds",
+                  rows[3]["min"] == 0.1 and rows[3]["max"] == 1.0 and rows[3]["step"] == 0.1)
+            check("  a choice row carries its options",
+                  rows[2]["options"] == ["cartesian", "joint"])
+
+        # The headset reports interaction on ui/menu/event; simulate the row being moved.
+        client.publish("ui/menu/event", {"id": "spd", "value": 0.7})
+        e = _await(lambda: events[0] if events else None)
+        check("an interaction reaches the robot",
+              e is not None and e["id"] == "spd" and abs(e["value"] - 0.7) < 1e-6)
+
+        ui.menu([])
+        cleared = _await(lambda: rows_seen[1] if len(rows_seen) > 1 else None)
+        check("an empty list clears the section",
+              cleared is not None and cleared["rows"] == [])
+        client.stop()
+    finally:
+        link.stop()
+
+    print("deadman bit")
+    held = HeadsetInput(seq=1, deadman=True)
+    idle = HeadsetInput(seq=2, deadman=False)
+    check("deadman survives a round trip",
+          HeadsetInput.unpack(held.pack()).deadman is True)
+    check("  and its absence does too",
+          HeadsetInput.unpack(idle.pack()).deadman is False)
+    check("  it costs no bytes -- it is a spare flag bit",
+          len(held.pack()) == len(idle.pack()) == INPUT_SIZE)
+    check("  and rides in flags, so it stops arriving when the uplink does",
+          bool(HeadsetInput.unpack(held.pack()).flags & INPUT_DEADMAN))
 
     print("reassembler under loss")
     r = Reassembler()

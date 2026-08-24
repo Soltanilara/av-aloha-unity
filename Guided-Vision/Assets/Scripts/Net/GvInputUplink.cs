@@ -16,6 +16,21 @@ using UnityEngine;
 /// projection. The robot then needs to know nothing about the display in order to crop
 /// for it.
 /// </summary>
+/// <summary>Which control, if any, arms motion on the robot.</summary>
+public enum GvDeadmanSource
+{
+    /// <summary>No deadman. The bit is set on every packet; see GvInputPacket.FlagDeadman.</summary>
+    Off = 0,
+    /// <summary>Either grip (middle-finger) trigger.</summary>
+    Grip = 1,
+    /// <summary>Either index trigger.</summary>
+    Trigger = 2,
+    /// <summary>Either hand's index pinch, for hand tracking.</summary>
+    Pinch = 3,
+    /// <summary>Grip when holding controllers, pinch when using hands.</summary>
+    Auto = 4,
+}
+
 public class GvInputUplink : MonoBehaviour
 {
     [Header("Tracking")]
@@ -41,6 +56,17 @@ public class GvInputUplink : MonoBehaviour
     public bool simulateGazeWithMouse = true;
 
     [Header("Rate")]
+    [Header("Deadman")]
+    [Tooltip("Which control arms motion. The robot decides what to do with the bit; the " +
+             "headset only reports whether it is held. Auto follows whatever the " +
+             "operator is holding, which is the only setting that stays correct when " +
+             "they put a controller down mid-session.")]
+    public GvDeadmanSource deadmanSource = GvDeadmanSource.Auto;
+
+    [Tooltip("How hard the grip or trigger must be pulled to count as held. High enough " +
+             "that resting a finger on it is not an arm command.")]
+    [Range(0.1f, 1f)] public float deadmanThreshold = 0.6f;
+
     [Tooltip("Send rate. Matching the display refresh keeps gaze as fresh as the " +
              "frame it will steer.")]
     public float rateHz = 90f;
@@ -64,6 +90,9 @@ public class GvInputUplink : MonoBehaviour
 
     /// <summary>True while the runtime is tracking hands rather than controllers.</summary>
     public bool HandsActive { get; private set; }
+
+    /// <summary>Whether the deadman was held on the most recent packet.</summary>
+    public bool DeadmanHeld { get; private set; }
 
     /// <summary>Last gaze point sent, in source-image UV. Centre when unavailable.</summary>
     public Vector2 GazeUV { get; private set; } = new Vector2(0.5f, 0.5f);
@@ -161,9 +190,11 @@ public class GvInputUplink : MonoBehaviour
         var rc = hands ? default(GvControllerState)
                        : ReadController(rightController, OVRInput.Controller.RTouch);
 
+        DeadmanHeld = ReadDeadman(hands);
+
         int n = GvInputPacket.Pack(packet, ++seq, (ulong)(Clock.ElapsedTicks / 10L),
                            ReadPose(head), lc, rc,
-                           gl, gr, confidence, gazeValid,
+                           gl, gr, confidence, gazeValid, DeadmanHeld,
                            hands,
                            hands ? handTracking.Left : default(GvHandState),
                            hands ? handTracking.Right : default(GvHandState));
@@ -178,6 +209,44 @@ public class GvInputUplink : MonoBehaviour
             // next is 11 ms away. Tearing down the session over it would be worse.
         }
     }
+
+    /// <summary>
+    /// Whether the operator is holding the deadman control this frame.
+    ///
+    /// `Off` reports held on every packet rather than never: a robot that gates motion
+    /// on this bit would otherwise be frozen by a configuration choice, with nothing on
+    /// screen to say why. The policy travels separately in `hs/state`, so a robot that
+    /// wants to refuse to move without a real deadman can check that and say so.
+    /// </summary>
+    private bool ReadDeadman(bool hands)
+    {
+        var source = deadmanSource;
+        if (source == GvDeadmanSource.Auto)
+            source = hands ? GvDeadmanSource.Pinch : GvDeadmanSource.Grip;
+
+        switch (source)
+        {
+            case GvDeadmanSource.Off:
+                return true;
+
+            case GvDeadmanSource.Grip:
+                return OVRInput.Get(OVRInput.Axis1D.PrimaryHandTrigger, OVRInput.Controller.LTouch) >= deadmanThreshold
+                    || OVRInput.Get(OVRInput.Axis1D.PrimaryHandTrigger, OVRInput.Controller.RTouch) >= deadmanThreshold;
+
+            case GvDeadmanSource.Trigger:
+                return OVRInput.Get(OVRInput.Axis1D.PrimaryIndexTrigger, OVRInput.Controller.LTouch) >= deadmanThreshold
+                    || OVRInput.Get(OVRInput.Axis1D.PrimaryIndexTrigger, OVRInput.Controller.RTouch) >= deadmanThreshold;
+
+            case GvDeadmanSource.Pinch:
+                return Pinching(handTracking != null ? handTracking.Left : default(GvHandState))
+                    || Pinching(handTracking != null ? handTracking.Right : default(GvHandState));
+        }
+        return true;
+    }
+
+    /// <summary>Index-finger pinch strength, which is pinch slot 1.</summary>
+    private bool Pinching(GvHandState h) =>
+        h.Tracked && h.Pinch != null && h.Pinch.Length > 1 && h.Pinch[1] >= deadmanThreshold;
 
     /// <summary>
     /// Bind (or rebind) the socket to wherever the robot currently is.

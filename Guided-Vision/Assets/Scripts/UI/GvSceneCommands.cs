@@ -87,6 +87,14 @@ public class GvSceneCommands : MonoBehaviour
     public int GuidesReceived { get; private set; }
     public int MarkerCount => markers.Count;
 
+    /// <summary>Controls the robot asked the session menu to show. Never null.</summary>
+    public List<GvRobotRow> RobotRows { get; private set; } = new List<GvRobotRow>();
+
+    /// <summary>Raised when the row list is replaced, so the menu can rebuild.</summary>
+    public event System.Action RowsChanged;
+
+    public int MenuPublishes { get; private set; }
+
     private void Start()
     {
         session = GvRobotSession.Instance;
@@ -96,10 +104,57 @@ public class GvSceneCommands : MonoBehaviour
         var link = session != null ? session.Link : null;
         if (link == null)
             return;
+        link.Subscribe("ui/menu", OnMenu);
         link.Subscribe("ui/marker", OnMarker);
         link.Subscribe("ui/guide", OnGuide);
         link.Subscribe("ui/toast", OnToast);
         link.Subscribe("hx", OnHaptics);
+    }
+
+    // ------------------------------------------------------------------ robot menu
+
+    /// <summary>
+    /// Replace the robot's menu rows.
+    ///
+    /// Wholesale replacement, not a merge. The robot can enable, disable, relabel or
+    /// reorder anything by sending the list it wants, and there is no way for the two
+    /// ends to disagree about a row that was removed. `{"rows": []}` clears the section.
+    /// </summary>
+    private void OnMenu(object data)
+    {
+        var m = data as Dictionary<string, object>;
+        if (m == null)
+            return;
+
+        var rows = new List<GvRobotRow>();
+        var list = GvMsgPack.GetList(m, "rows");
+        if (list != null)
+        {
+            foreach (var entry in list)
+            {
+                var row = GvRobotRow.FromMap(entry as Dictionary<string, object>);
+                if (row != null)
+                    rows.Add(row);
+            }
+        }
+
+        RobotRows = rows;
+        MenuPublishes++;
+        if (RowsChanged != null)
+            RowsChanged();
+    }
+
+    /// <summary>Report that the operator touched a robot row.</summary>
+    public void PublishRowEvent(GvRobotRow row)
+    {
+        if (row == null)
+            return;
+        var link = session != null ? session.Link : null;
+        if (link == null)
+            return;
+        link.Publish("ui/menu/event", GvRobotSession.Map(
+            "id", row.Id,
+            "value", row.EventValue()));
     }
 
     // -------------------------------------------------------- controller/hand meshes

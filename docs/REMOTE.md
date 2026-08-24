@@ -30,6 +30,17 @@ over a DERP relay. Slower, but the session stays up instead of dying.
 routes directly across it -- so this is not a choice between local and remote. The same
 build handles both, and the LAN case keeps its LAN latency.
 
+**It is the only encryption in this system.** Worth stating plainly rather than leaving
+implied: the video stream is raw UDP and the control channel is raw TCP, both in the
+clear, with no authentication beyond "you reached the port". On a LAN that is a
+reasonable trade for latency. Over the internet it is not, and a port forward would put
+an unauthenticated control channel -- one that drives a physical robot -- on the public
+internet. WireGuard underneath is what makes the remote case defensible, which is why
+this document recommends an overlay network rather than treating it as one option among
+several. **Do not port-forward the control port.** If the overlay is genuinely
+unavailable, an SSH tunnel is the fallback; adding a handshake to the sockets themselves
+is real work and has not been done.
+
 The free tier covers this comfortably: it is priced per user and per device, with no
 bandwidth cap and no metering of how much you use a link. One person with a robot, a
 laptop and a headset is three devices against a limit of a hundred.

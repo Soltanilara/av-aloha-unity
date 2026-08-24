@@ -1,10 +1,16 @@
 # The headset as a device, not an application
 
-**Status: Phase A is built.** `ui/guide`, `ui/marker`, `ui/toast` and `hx` are
-implemented in `GvSceneCommands.cs` / `GvToast.cs` on the headset and `gvlink/ui.py` on
-the robot; `mock_robot.py --ui-demo` exercises them without any robot code. `ui/menu`,
-`ui/overlay`, `ui/hud`, `ui/prompt`, `hs/state`, `hs/event` and the deadman bit are still
-plan only, and are marked below.
+**Status: Phase A is complete.** `ui/guide`, `ui/marker`, `ui/toast`, `hx`, `ui/menu` +
+`ui/menu/event`, `ui/recenter` and `hs/state` are implemented, along with the deadman bit
+-- so most new teleoperation features are now Python only. `mock_robot.py --ui-demo`
+exercises all of it without any robot code.
+
+Still plan only, and marked below: `ui/overlay`, `ui/hud`, `ui/prompt` and `hs/event`.
+
+| | |
+|---|---|
+| headset | `GvSceneCommands.cs`, `GvRobotRow.cs`, `GvSessionMenu.cs`, `GvHeadsetState.cs`, `GvToast.cs`, `GvInputUplink.cs` |
+| robot | `gvlink/ui.py`, `gvlink/robotlink.py`, `gvlink/protocol.py` |
 
 The goal is to stop editing the Unity app. Teleoperation policy — what a wrist pose means,
 where the arm should go, when to record — belongs on the robot, in Python, where it can be
@@ -159,7 +165,7 @@ link.publish("ui/toast", {"txt": "joint 4 near limit", "sev": "warn", "secs": 3}
 
 `sev`: `info` · `warn` · `error`. Errors also buzz.
 
-## `ui/menu` — *not built* — robot-defined controls
+## `ui/menu` — robot-defined controls
 
 **This is the lever that makes "never touch the Unity app again" true.** The robot declares
 rows; they appear in the session menu below the display settings.
@@ -176,12 +182,33 @@ link.publish("ui/menu", {"rows": [
 ]})
 ```
 
+In practice, build the rows with the helpers rather than by hand:
+
+```python
+from gvlink.ui import HeadsetUi, button, toggle, choice, rng
+
+ui.menu([button("rec", "Record episode"),
+         toggle("grip", "Gripper open", False),
+         choice("mode", "Control mode", ["cartesian", "joint"], "cartesian"),
+         rng("spd", "Speed", 0.1, 1.0, 0.1, 0.5, fmt="{0:0.0}x")])
+ui.on_menu_event(lambda e: print(e["id"], e["value"]))
+```
+
 The headset publishes `ui/menu/event` `{"id": "spd", "value": 0.7}` on interaction. Rows are
 replaced wholesale on each publish, so the robot can enable, disable and relabel them freely
 — including greying one out mid-task by re-sending the list with `"enabled": False`.
 
-Episode recording, calibration routines, gripper presets, mode switches and homing all
-become robot-side code the moment this exists. None of them need a Unity change.
+**Values move locally first, then get corrected.** A row that waited for the robot to
+confirm would feel broken over any real link, so the headset applies the change at once
+and sends the event; the robot's next publish is authoritative. `mock_robot.py --ui-demo`
+demonstrates the loop: pressing *Record episode* relabels that row and disables *Home the
+arms* in the same reply.
+
+A row without an `id` is dropped silently — it would be a control the headset had no way
+to report back.
+
+Episode recording, calibration routines, gripper presets, mode switches and homing are all
+robot-side code now. None of them need a Unity change.
 
 ## `ui/prompt` — *not built* — ask the operator a question
 
@@ -211,13 +238,18 @@ Re-origins the view. Bumps `origin_epoch`.
 
 # Headset → robot
 
-## `hs/state` — *not built* — what the device is doing, ~2 Hz
+## `hs/state` — what the device is doing, ~2 Hz
 
 ```python
+ui.on_state(lambda s: ...)
+
 {"batt": 0.62, "mounted": True, "src": "hands", "origin_epoch": 3,
- "hz": 90, "fps": 88.4, "missed": 2, "guardian": False,
- "hand_conf": {"l": 1.0, "r": 0.5}, "eye_tracking": False}
+ "hz": 90, "fps": 88.4, "missed": 2, "deadman": "auto", "deadman_held": False,
+ "hand_conf": {"l": 1.0, "r": 0.5}, "eye_tracking": False,
+ "uplink_hz": 90, "sent": 41233, "gaze": False}
 ```
+
+A change in `mounted` is published immediately rather than waiting for the next tick.
 
 `mounted: False` — **the operator has taken the headset off.** That is a safety event, not
 telemetry. The robot should treat it exactly as it treats a deadman release.
@@ -240,7 +272,7 @@ The last one matters more than it looks. A robot mapping a wrist to an end effec
 know on the *frame* the operator sets a controller down, not to infer it from poses going
 quiet.
 
-## Deadman — *not built* — a bit in the uplink, deliberately
+## Deadman — a bit in the uplink, deliberately
 
 Not a topic. **Bit 6 of the uplink flags** (bits 0–5 are in use), driven by a configurable
 control — grip held, pinch held, or disabled entirely.
@@ -250,6 +282,16 @@ and it must fail safe: if the uplink stops arriving, the bit stops arriving with
 robot gating motion on "deadman set in a packet newer than 100 ms" stops on its own with no
 timeout logic to get wrong. A TCP event saying "released" can be the thing that fails to
 arrive.
+
+Read it as `inp.deadman` (`INPUT_DEADMAN`, bit 6). The control is chosen from the session
+menu — off, grip, trigger, pinch, or **auto**, which follows whatever the operator is
+actually holding and so stays correct when they put a controller down mid-session.
+
+With the control set to `off` the bit is set on **every** packet, and `hs/state` reports
+`deadman: "off"`. Reporting "never held" instead would freeze any robot that gates on it,
+with nothing on screen to explain why; this way "held" and "not in use" stay
+distinguishable, and the fail-safe property is unaffected because it comes from the packets
+stopping, not from the bit clearing.
 
 ---
 
@@ -262,20 +304,24 @@ outright; the remaining controller/hand meshes are off by default and behind a
 
 **A "where am I" affordance.** After a recentre or a long session, a faint floor grid or an
 origin gizmo on demand costs nothing and answers a question that is otherwise unanswerable
-from inside the headset.
+from inside the headset. (`ui/recenter` and the menu's *Recentre tracking* row exist now,
+and report `origin_epoch`; the grid does not.)
 
 **Log the input source into episodes.** Hands and controllers produce measurably different
 demonstrations. If that is not recorded, it becomes an unexplained variance in the data.
+`hs/state.src` carries it now; writing it into the episode record is robot-side work.
 
 ---
 
 # Phasing
 
-**A — unblocks robot-side iteration.** `ui/guide`, `ui/marker`, `ui/toast`, `hx`, `ui/menu`
-+ `ui/menu/event`, `hs/state`. After this, most new teleop features are Python only.
+**A — unblocks robot-side iteration.** ✅ *Done.* `ui/guide`, `ui/marker`, `ui/toast`, `hx`,
+`ui/menu` + `ui/menu/event`, `hs/state`, and the deadman bit (pulled forward from B, since
+it is four lines of packing and the safety argument does not wait). Most new teleop features
+are Python only from here.
 
 **B — completes the loop.** `ui/overlay`, `ui/prompt` (with the inbound-call fix), `ui/hud`,
-deadman bit, `hs/event`.
+`hs/event`.
 
 **C — pure robot-side.** Episode recording, calibration routines, guided workflows. No Unity
 changes; if any are needed, A or B was wrong and that is worth knowing early.

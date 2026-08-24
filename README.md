@@ -37,19 +37,47 @@ uv run mock_robot.py --source webcam              # or --source pattern
 ```
 
 `uv run mock_robot.py --viser` adds a browser visualiser of everything the headset
-reports — head, hands, controllers, gaze, plus stream metrics. `--ui-demo` exercises the
-marker/guide/toast API with no robot code at all.
+reports — head, hands, controllers, gaze, device state, plus stream metrics. `--ui-demo`
+exercises the whole robot→headset API with no robot code at all: markers, guides, toasts,
+and a **robot-defined session menu** whose rows are declared in Python and appear in the
+headset without the Unity app knowing what any of them mean.
+
+One operator gets the video; anything else (a logger, the visualiser, a second pair of
+eyes) attaches as an observer, sees every topic, and never touches the stream:
+
+```python
+ControlClient(host, port, role=ROLE_OBSERVER)
+```
 
 The Unity Editor and the Meta XR Simulator can also receive the real stream: run the
 sender with `--codec mjpeg` (MediaCodec is Android-only, so the Editor decodes in C#).
+
+## Checks
+
+```bash
+uv run selftest.py     # protocol, encoder, rate control, link, UI wire formats
+```
+
+and in Unity, **Tools > Quest Teleop > Check project** — or in CI:
+
+```bash
+Unity -batchmode -quit -projectPath Guided-Vision \
+      -executeMethod GvProjectCheck.RunFromCommandLine
+```
+
+It checks the things whose breakage is *silent*: a script deleted out from under a scene
+object, a stray canvas drawing over the video, a build setting Meta requires, a shader
+loaded by name. Anything that would fail loudly at compile time is deliberately not in
+there.
 
 ## In the headset
 
 Open the session menu with **hold B/Y**, **tap the Menu button**, or **hold a
 middle-finger pinch** in hand-tracking mode. A progress pill appears while the gesture is
 being recognised, so "not registering" and "ignored" never look alike. From there:
-disconnect, reconnect, refresh rate, telemetry level, and whether the raw controller and
-hand meshes are drawn.
+disconnect, reconnect, refresh rate, telemetry level, whether the raw controller and hand
+meshes are drawn, which control acts as the **deadman**, and any rows the robot has
+declared.
 
 ## Docs
 

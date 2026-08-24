@@ -69,6 +69,22 @@ public static class GvInputPacket
     public const int FlagExtras = 1 << 4;
     public const int FlagHands = 1 << 5;
 
+    /// <summary>
+    /// The operator is holding the deadman control.
+    ///
+    /// Deliberately a bit in this packet rather than a topic on the control channel. It
+    /// has to be current, and it has to fail safe: if the uplink stops arriving the bit
+    /// stops arriving with it, so a robot gating motion on "deadman set in a packet
+    /// newer than 100 ms" halts on its own with no timeout logic to get wrong. A TCP
+    /// "released" event is a message that can fail to be delivered, which is the one
+    /// thing a stop signal must never be.
+    ///
+    /// When the operator has configured no deadman control, this is set on every packet
+    /// and <c>hs/state</c> reports <c>deadman: "off"</c> -- so a robot can tell "held"
+    /// from "not in use" without the stream going quiet meaning something different.
+    /// </summary>
+    public const int FlagDeadman = 1 << 6;
+
     public const int ButtonOne = 1 << 0;     // A / X
     public const int ButtonTwo = 1 << 1;     // B / Y
     public const int ButtonStick = 1 << 2;
@@ -87,7 +103,7 @@ public static class GvInputPacket
     public static int Pack(byte[] buf, uint seq, ulong tsUs,
                            GvPose head, GvControllerState left, GvControllerState right,
                            Vector2 gazeLeft, Vector2 gazeRight, float gazeConfidence,
-                           bool gazeValid,
+                           bool gazeValid, bool deadman,
                            bool hands, GvHandState handLeft, GvHandState handRight)
     {
         int need = hands ? SizeWithHands(handLeft, handRight) : Size;
@@ -103,6 +119,7 @@ public static class GvInputPacket
         if (left.Pose.Valid) flags |= FlagLeft;
         if (right.Pose.Valid) flags |= FlagRight;
         if (hands) flags |= FlagHands;
+        if (deadman) flags |= FlagDeadman;
         buf[c++] = (byte)flags;
 
         U32(buf, ref c, seq);
