@@ -27,6 +27,7 @@ way is the operator facing" never depends on remembering that.
 from __future__ import annotations
 
 import math
+import time
 
 import numpy as np
 
@@ -136,10 +137,111 @@ class HeadsetViz:
         self._parents: dict[str, tuple] = {}
         self._anchor = None                 # (position, yaw quaternion) or None
         self._last_head = None
+        self._metrics: dict = {}
+        self._panel_text: dict = {}
+        self._panel_at = 0.0
+        self._seq_at = None
         self.url = f"http://localhost:{port}"
         self._build_gui()
 
+    # ------------------------------------------------------------------ panel
+
+    @staticmethod
+    def _bar(v: float, width: int = 8) -> str:
+        """A fixed-width analogue bar. Inside a code fence it stays aligned, which is
+        what makes a column of them readable at a glance rather than a wall of digits."""
+        n = max(0, min(width, int(round(float(v) * width))))
+        return "\u2588" * n + "\u00b7" * (width - n)
+
+    @staticmethod
+    def _euler(q):
+        """Yaw / pitch / roll in degrees, from the right-handed quaternion. Shown instead
+        of the raw quaternion because nobody reads a quaternion for orientation."""
+        x, y, z, w = q
+        sp = max(-1.0, min(1.0, 2.0 * (w * x - y * z)))
+        pitch = math.degrees(math.asin(sp))
+        yaw = math.degrees(math.atan2(2.0 * (w * y + x * z),
+                                      1.0 - 2.0 * (x * x + y * y)))
+        roll = math.degrees(math.atan2(2.0 * (w * z + x * y),
+                                       1.0 - 2.0 * (x * x + z * z)))
+        return yaw, pitch, roll
+
+    def set_metrics(self, metrics: dict) -> None:
+        """Stream numbers from the sender, shown beside the poses they belong to."""
+        self._metrics = dict(metrics or {})
+
+    def _push(self, handle, text: str) -> None:
+        """Only send when it changed. Every assignment is a websocket message, and at
+        30 Hz across four panels that is a lot of traffic to spend on identical text."""
+        if handle is None:
+            return
+        if self._panel_text.get(id(handle)) == text:
+            return
+        self._panel_text[id(handle)] = text
+        handle.content = text
+
+    def _update_panel(self, p: HeadsetInput) -> None:
+        now = time.monotonic()
+        if now - self._panel_at < 0.12:      # ~8 Hz; the numbers are unreadable faster
+            return
+        self._panel_at = now
+
+        hp, hr = to_right_handed(p.head_pos, p.head_rot)
+        yaw, pitch, roll = self._euler(hr)
+        rate = 0.0
+        if self._seq_at is not None and now > self._seq_at[1]:
+            rate = (p.seq - self._seq_at[0]) / (now - self._seq_at[1])
+        self._seq_at = (p.seq, now)
+
+        flags = [n for n, bit in (("gaze", 1), ("head", 2), ("left", 4),
+                                  ("right", 8), ("extras", 16), ("hands", 32))
+                 if p.flags & bit]
+        self._push(self._md_head, "```\n"
+            f"source   {p.source}\n"
+            f"uplink   {rate:6.1f} Hz   seq {p.seq}\n"
+            f"flags    {' '.join(flags) or '-'}\n"
+            f"head xyz {hp[0]:+6.2f} {hp[1]:+6.2f} {hp[2]:+6.2f}  m\n"
+            f"head ypr {yaw:+6.1f} {pitch:+6.1f} {roll:+6.1f}  deg\n"
+            f"gaze L   {p.gaze_l[0]:.3f}, {p.gaze_l[1]:.3f}"
+            f"{'' if p.gaze_valid else '   (invalid)'}\n"
+            f"gaze R   {p.gaze_r[0]:.3f}, {p.gaze_r[1]:.3f}\n"
+            f"gaze conf {self._bar(p.gaze_confidence)} {p.gaze_confidence:.2f}\n"
+            "```")
+
+        rows = ["```", "        trig     grip     stick        buttons"]
+        for name, c in (("left ", p.left), ("right", p.right)):
+            btns = " ".join(n for n, b in (("A/X", 1), ("B/Y", 2), ("stick", 4),
+                                           ("menu", 8)) if c.buttons & b) or "-"
+            rows.append(f"{name}  {self._bar(c.trigger, 5)} {c.trigger:.2f} "
+                        f"{self._bar(c.grip, 5)} {c.grip:.2f} "
+                        f"{c.stick[0]:+.2f},{c.stick[1]:+.2f}  {btns}")
+        rows.append("```")
+        self._push(self._md_ctrl, "\n".join(rows))
+
+        rows = ["```", "      trk conf joints  " + "  ".join(f"{f[:4]:>4}" for f in FINGERS)]
+        for name, h in (("left ", p.hand_l), ("right", p.hand_r)):
+            if h is None or not h.tracked:
+                rows.append(f"{name}  -    -     -")
+                continue
+            pinch = "  ".join(f"{h.pinch_of(f):4.2f}" for f in FINGERS)
+            rows.append(f"{name}  y  {h.confidence:4.2f}  {h.joint_count:3d}   {pinch}")
+        rows.append("```")
+        self._push(self._md_hands, "\n".join(rows))
+
+        m = self._metrics
+        if m:
+            self._push(self._md_stream, "```\n" + "\n".join(
+                f"{k:<10} {v}" for k, v in m.items()) + "\n```")
+
     def _build_gui(self) -> None:
+        with self.server.gui.add_folder("Headset"):
+            self._md_head = self.server.gui.add_markdown("```\nwaiting\n```")
+        with self.server.gui.add_folder("Controllers"):
+            self._md_ctrl = self.server.gui.add_markdown("```\nwaiting\n```")
+        with self.server.gui.add_folder("Hands"):
+            self._md_hands = self.server.gui.add_markdown("```\nwaiting\n```")
+        with self.server.gui.add_folder("Stream"):
+            self._md_stream = self.server.gui.add_markdown("```\nwaiting\n```")
         with self.server.gui.add_folder("View"):
             centre = self.server.gui.add_button("Centre on headset")
             reset = self.server.gui.add_button("Clear anchor")
@@ -192,6 +294,7 @@ class HeadsetViz:
         if p is None:
             return
         self._draw_head(p)
+        self._update_panel(p)
         source = p.source
         if source == "hands":
             self._clear_controllers()

@@ -647,6 +647,22 @@ def main() -> int:
                 mbps = (total - last_bytes) * 8 / max(0.25, now - last_report) / 1e6
                 enc = sum(s.encode_ms.mean() for s in senders.values())
                 el_stream = max(0.25, now - (stream_started or now))
+                if viz is not None:
+                    sess = link.session
+                    lay = layout[0]
+                    viz.set_metrics({
+                        "fps": f"{n / el_stream:.1f} sent  ({args.fps} target)",
+                        "rate": f"{mbps:.2f} Mbit/s",
+                        "encode": f"{enc:.2f} ms/pair",
+                        "bitrate": rate.describe(),
+                        "uplink": f"{input_rx.rate_hz:.0f} Hz",
+                        "gaze": f"{gaze_src}  zoom {widener.zoom:.2f}",
+                        "canvas": f"{lay.canvas_w}x{lay.canvas_h}"
+                                  f"  coarse {lay.coarse_scale:.2f}"
+                                  f"  fovea {lay.fovea_scale:.2f}",
+                        "viewer": str(sess) if sess else "none",
+                        "sent": f"{n} pairs, {total / 1e6:.1f} MB",
+                    })
                 print(f"tx {n/el_stream:5.1f} fps avg | {mbps:6.2f} Mbit/s | "
                       f"encode {enc:5.2f} ms/pair | gaze={gaze_src} "
                       f"zoom {widener.zoom:.2f} "
