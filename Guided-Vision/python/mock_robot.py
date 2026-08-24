@@ -27,7 +27,7 @@ import cv2
 import numpy as np
 
 from gvlink.beacon import Beacon, build_payload
-from gvlink.foveal import AtlasLayout, SaccadeWidener, bandwidth_note
+from gvlink.foveal import MIN_CANVAS, AtlasLayout, SaccadeWidener, bandwidth_note
 from gvlink.camera import CameraParams
 from gvlink.ratecontrol import BitrateController
 from gvlink.robotlink import RobotLink
@@ -257,13 +257,33 @@ def main() -> int:
     ap.add_argument("--name", default="mock-robot", help="name shown in the headset's robot list")
     ap.add_argument("--no-beacon", action="store_true",
                     help="do not advertise on the LAN (the headset must be told the address)")
+    ap.add_argument("--no-tight-canvas", action="store_true",
+                    help="encode the full requested canvas even where the two layers "
+                         "do not fill it. At the defaults that is 81%% black, which "
+                         "costs about half the encode time for nothing -- this flag "
+                         "exists to measure that, not because you want it")
     args = ap.parse_args()
 
     src_w, src_h = args.src if isinstance(args.src, tuple) else parse_wh(args.src)
-    base_layout = AtlasLayout(*(args.canvas if isinstance(args.canvas, tuple)
-                                else parse_wh(args.canvas)),
-                              coarse_scale=args.coarse_scale,
-                              fovea_scale=args.fovea_scale)
+    def tighten(lay: AtlasLayout) -> AtlasLayout:
+        """
+        Shrink the canvas to what the two layers actually occupy.
+
+        The canvas size and the layer scales are chosen independently, so the default
+        combination leaves 81% of the canvas black -- and the encoder pays for every one
+        of those macroblocks. Tightening keeps the layer pixels identical and the wire
+        format identical (the shader works in canvas fractions, so it cannot tell), and
+        is worth roughly 2x encode, 1.3x decode and 14% bitrate.
+
+        The requested canvas becomes an upper bound rather than an instruction. Nothing
+        downstream needs to agree: the headset reads the canvas size out of the stream.
+        """
+        return lay if args.no_tight_canvas else lay.tightened()
+
+    base_layout = tighten(AtlasLayout(*(args.canvas if isinstance(args.canvas, tuple)
+                                        else parse_wh(args.canvas)),
+                                      coarse_scale=args.coarse_scale,
+                                      fovea_scale=args.fovea_scale))
 
     # Boxed so the send loop and the session handler share one value. The viewer may ask
     # for a different shape -- it is the end that knows its own decoder and its own link
@@ -274,9 +294,22 @@ def main() -> int:
         if sess is None:
             return base_layout
         try:
-            w, h = sess.canvas or (base_layout.canvas_w, base_layout.canvas_h)
+            if not sess.canvas:
+                # Nothing requested, so this is the robot's own choice to make.
+                return base_layout
+            w, h = sess.canvas
+            # A canvas the viewer asked for is honoured as given -- **not** tightened.
+            # The viewer allocates its decoder texture at the size it asked for and
+            # divides every layer span by that number, so a canvas we changed underneath
+            # it would leave it sampling the wrong part of the atlas: a wrong picture
+            # rather than a failed one, and one that would look like a display bug. It
+            # has already tightened its own request (GvAtlas.Tighten); tightening it
+            # again here would be us second-guessing the end that owns the decoder.
+            #
+            # The clamp is a guard against a broken client, not a negotiation. Its floor
+            # matches GvAtlas.MinCanvas precisely so it never fires on a real request.
             return AtlasLayout(
-                max(256, min(2048, int(w))), max(256, min(2048, int(h))),
+                max(MIN_CANVAS, min(2048, int(w))), max(MIN_CANVAS, min(2048, int(h))),
                 coarse_scale=sess.coarse_scale if sess.coarse_scale else base_layout.coarse_scale,
                 fovea_scale=sess.fovea_scale if sess.fovea_scale else base_layout.fovea_scale)
         except ValueError as e:
@@ -660,8 +693,9 @@ def main() -> int:
                       f"codec={CODEC_NAMES[req_codec]} "
                       f"fovea={'on' if req_fovea else 'off'} "
                       f"canvas={want_layout.canvas_w}x{want_layout.canvas_h} "
-                      f"coarse={want_layout.coarse_scale:.2f} "
-                      f"fovea_scale={want_layout.fovea_scale:.2f}")
+                      f"({want_layout.waste:.0%} padding) "
+                      f"coarse={want_layout.coarse_px()[0]}x{want_layout.coarse_px()[1]} "
+                      f"fovea={want_layout.fovea_px()[0]}x{want_layout.fovea_px()[1]}")
             want_fovea = req_fovea
 
             if cap is not None:

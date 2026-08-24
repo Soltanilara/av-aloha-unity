@@ -78,7 +78,10 @@ class ControlClient:
     def __init__(self, host: str, port: int | None = None, *,
                  video_port: int | None = None, codec: int = CODEC_H264,
                  foveation: bool = True, name: str = "bench",
-                 role: str = ROLE_OPERATOR) -> None:
+                 role: str = ROLE_OPERATOR,
+                 canvas: tuple[int, int] | None = None,
+                 coarse_scale: float | None = None,
+                 fovea_scale: float | None = None) -> None:
         self.host = host
         self.port = port or DEFAULT_PORTS["control"]
         # role=ROLE_OBSERVER attaches without claiming the video stream: every topic
@@ -91,6 +94,16 @@ class ControlClient:
             "name": name,
             "role": role,
         }
+        # The stream's shape, if this end wants a say. The headset always does -- it
+        # sizes its decoder texture to the canvas it asks for -- so being able to send
+        # the same fields is what makes that negotiation testable without a headset.
+        # The robot honours a requested canvas as given rather than tightening it.
+        if canvas:
+            self.session["cw"], self.session["ch"] = int(canvas[0]), int(canvas[1])
+        if coarse_scale is not None:
+            self.session["cs"] = float(coarse_scale)
+        if fovea_scale is not None:
+            self.session["fs"] = float(fovea_scale)
         self.connected = False
         # Set when the robot hands the operator slot to somebody else. The client then
         # stops instead of redialling -- see _read.

@@ -36,6 +36,13 @@ public class GvStereoDisplay : MonoBehaviour
     public int canvasWidth = 1024;
     public int canvasHeight = 1024;
 
+    [Tooltip("Fraction of its band each atlas layer fills. These and the canvas size " +
+             "are what GvAtlas.Tighten reconciles: the canvas is shrunk to fit the " +
+             "layers rather than the layers being grown to fill the canvas, because " +
+             "the black remainder costs encode and decode time for nothing.")]
+    public float coarseScale = 0.35f;
+    public float foveaScale = 0.5f;
+
     [Tooltip("The camera's own resolution, BEFORE atlas packing. This drives the quad " +
              "aspect ratio: the atlas canvas is square but the imagery is not, so " +
              "getting this wrong stretches the picture.")]
@@ -162,6 +169,12 @@ public class GvStereoDisplay : MonoBehaviour
         SetUpHud();
         ApplyStereoLayout();
 
+        // Shrink the canvas to what the two layers actually occupy, before anything
+        // is sized against it. Both the decoder started here and the session dict sent
+        // below must use the same number, or the headset allocates a texture the stream
+        // never fills and every layer span is scaled wrong.
+        TightenCanvas();
+
         link = new GvVideoLink();
         link.Start(videoPort, canvasWidth, canvasHeight, softwareVideo);
         left.source = link.Left;
@@ -177,6 +190,17 @@ public class GvStereoDisplay : MonoBehaviour
             // Playing this scene directly, without going through the menu.
             p = new GvRobotProfile { name = "direct", host = fallbackHost,
                                      videoPort = videoPort, foveation = true };
+        }
+        if (p != null)
+        {
+            // A copy, so the tightened numbers describe this session without becoming a
+            // saved preference. The robot must be asked for exactly the canvas the
+            // decoder above was started at.
+            p = p.Clone();
+            p.canvasWidth = canvasWidth;
+            p.canvasHeight = canvasHeight;
+            p.coarseScale = coarseScale;
+            p.foveaScale = foveaScale;
         }
         session = GvRobotSession.Instance;
         uplink = FindAnyObjectByType<GvInputUplink>(FindObjectsInactive.Include);
@@ -237,6 +261,8 @@ public class GvStereoDisplay : MonoBehaviour
         videoPort = profile.videoPort;
         canvasWidth = profile.canvasWidth;
         canvasHeight = profile.canvasHeight;
+        coarseScale = profile.coarseScale;
+        foveaScale = profile.foveaScale;
         sourceWidth = profile.sourceWidth;
         sourceHeight = profile.sourceHeight;
         videoPlaneDistance = profile.videoPlaneDistance;
@@ -374,6 +400,38 @@ public class GvStereoDisplay : MonoBehaviour
             try { return OVRManager.display != null ? OVRManager.display.displayFrequency : 0f; }
             catch (System.Exception) { return 0f; }
         }
+    }
+
+    /// <summary>
+    /// Ask for the smallest canvas that holds the two layers.
+    ///
+    /// The saving is real and free: at the shipping scales the canvas is 81% black, and
+    /// both ends spend time on it. See <see cref="GvAtlas"/> for why this belongs on the
+    /// headset rather than the robot.
+    ///
+    /// The *profile* is left alone. These are the numbers this session runs with, not a
+    /// new preference -- the menu still shows the operator the ceiling they chose, and
+    /// nothing tightened gets written back to disk.
+    /// </summary>
+    private void TightenCanvas()
+    {
+        if (canvasWidth <= 0 || canvasHeight <= 0)
+            return;
+        int w, h;
+        float cs, fs;
+        GvAtlas.Tighten(canvasWidth, canvasHeight, coarseScale, foveaScale,
+                        out w, out h, out cs, out fs);
+        if (w == canvasWidth && h == canvasHeight)
+            return;
+        Debug.Log($"GvStereoDisplay: canvas {canvasWidth}x{canvasHeight} -> {w}x{h} "
+                  + $"({GvAtlas.Waste(canvasWidth, canvasHeight, coarseScale, foveaScale):P0} "
+                  + $"padding -> {GvAtlas.Waste(w, h, cs, fs):P0}); "
+                  + $"coarse {GvAtlas.CoarseW(w, cs)}x{GvAtlas.CoarseH(h, cs)}, "
+                  + $"fovea {GvAtlas.FoveaW(w, fs)}x{GvAtlas.FoveaH(h, fs)}");
+        canvasWidth = w;
+        canvasHeight = h;
+        coarseScale = cs;
+        foveaScale = fs;
     }
 
     /// <summary>Rendered frames per second, averaged over the last reporting window.</summary>

@@ -26,6 +26,7 @@ from gvlink.protocol import HandState
 from gvlink.ratecontrol import BitrateController
 from gvlink.pattern import make_chart
 from gvlink.protocol import (BUTTON_ONE, BUTTON_STICK, BUTTON_TWO, EYE_LEFT,
+                             CODEC_MJPEG,
                              INPUT_DEADMAN, INPUT_GAZE_VALID, INPUT_HEAD_VALID,
                              INPUT_LEFT_VALID,
                              INPUT_SIZE, HeadsetInput, Reassembler, VideoHeader,
@@ -655,6 +656,87 @@ def main() -> int:
           canvas is not None and canvas.size > 0)
     tx_sock.close()
     rx_sock.close()
+
+    print("tight canvas")
+    # The canvas size and the layer scales are picked independently, so the shipping
+    # pairing leaves 81% of the canvas black -- and both ends pay for it in encode and
+    # decode time. Tightening must change the cost and nothing else.
+    #
+    # Swept rather than spot-checked because the arithmetic has three interacting
+    # roundings (even layer sizes, even canvas, a scale that has to reproduce both
+    # dimensions from one number) and the failures found while writing it were all in
+    # corners: a floor that grew the layer it was meant to preserve, and a canvas
+    # rounded up just past its largest layer, which quietly cost idempotence.
+    broken = {}
+    combos = 0
+    for canvas in (256, 512, 1024, 2048):
+        for cs in (0.05, 0.1, 0.2, 0.35, 0.5, 0.7, 0.9, 1.0):
+            for fs in (0.05, 0.1, 0.3, 0.5, 0.75, 0.9, 1.0):
+                combos += 1
+                loose = AtlasLayout(canvas, canvas, cs, fs)
+                tight = loose.tightened()
+                again = tight.tightened()
+                drift = max(abs(a - b) for a, b in
+                            zip(loose.coarse_px() + loose.fovea_px(),
+                                tight.coarse_px() + tight.fovea_px()))
+                for name, ok in (
+                    # The whole point: the operator sees the same two layers.
+                    ("layer sizes survive, within the 2px even-rounding", drift <= 2),
+                    # Both ends may apply it, and the robot re-derives from what it is
+                    # sent, so a second pass has to be a no-op.
+                    ("tightening twice is the same as once",
+                     (tight.canvas_w, tight.canvas_h) == (again.canvas_w, again.canvas_h)
+                     and tight.coarse_px() == again.coarse_px()
+                     and tight.fovea_px() == again.fovea_px()),
+                    # A canvas one pixel short of a layer crops it: a missing strip of
+                    # picture rather than an obvious failure.
+                    ("both layers still fit their band",
+                     max(tight.coarse_px()[0], tight.fovea_px()[0]) <= tight.canvas_w
+                     and max(tight.coarse_px()[1], tight.fovea_px()[1]) <= tight.band_h),
+                    ("it never grows the canvas",
+                     tight.canvas_w <= loose.canvas_w and tight.canvas_h <= loose.canvas_h),
+                    ("it never increases padding", tight.waste <= loose.waste + 1e-9),
+                ):
+                    if not ok:
+                        broken.setdefault(name, []).append((canvas, cs, fs))
+
+    for name in ("layer sizes survive, within the 2px even-rounding",
+                 "tightening twice is the same as once",
+                 "both layers still fit their band",
+                 "it never grows the canvas",
+                 "it never increases padding"):
+        hits = broken.get(name, [])
+        check(f"  {name}", not hits,
+              f"{combos} combinations" if not hits else f"{len(hits)} failed, e.g. {hits[0]}")
+
+    tight = layout.tightened()
+    check("  the shipping canvas really was mostly padding", layout.waste > 0.75,
+          f"{layout.waste:.0%} black -> {tight.waste:.0%}")
+    check("  and tightening is worth a real fraction of the pixels",
+          (layout.canvas_w * layout.canvas_h) / (tight.canvas_w * tight.canvas_h) >= 2.0,
+          f"{layout.canvas_w}x{layout.canvas_h} -> {tight.canvas_w}x{tight.canvas_h}, "
+          f"layers {tight.coarse_px()} + {tight.fovea_px()} unchanged")
+
+    tx2 = make_udp_socket()
+    rx2 = make_udp_socket(("127.0.0.1", 0))
+    rx2.settimeout(2.0)
+    views = {}
+    for name, lay in (("loose", layout), ("tight", tight)):
+        snd = EyeStreamSender(tx2, rx2.getsockname(), EYE_LEFT, lay, fps=30,
+                              bitrate_kbps=12000, codec=CODEC_MJPEG)
+        hdr, canvas = round_trip(snd, rx2, EyeStreamReceiver(EYE_LEFT), src, (0.42, 0.55))
+        views[name] = reconstruct(canvas, hdr, src_w, src_h)
+        check(f"  {name} canvas {lay.canvas_w}x{lay.canvas_h} decodes",
+              canvas is not None and canvas.shape[:2] == (lay.canvas_h, lay.canvas_w),
+              f"got {canvas.shape[1]}x{canvas.shape[0]}")
+    diff = float(np.abs(views["loose"].astype(np.int16)
+                        - views["tight"].astype(np.int16)).mean())
+    # MJPEG so the comparison is not confounded by inter-frame state; the two are the
+    # same picture, so the only difference should be codec noise.
+    check("  the reconstructed view is unchanged", diff < 1.0,
+          f"mean abs difference {diff:.3f}/255")
+    tx2.close()
+    rx2.close()
 
     print("concurrent viewers")
     # The accept loop used to serve each connection inline, so a single attached client

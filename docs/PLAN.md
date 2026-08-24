@@ -268,6 +268,47 @@ decoder is never reconfigured. Sizes are sent as exact pixels rather than a quan
 scale because rounding makes the sampler read into the black padding beside a layer; an
 8-bit scale was off by up to two pixels at 1024 wide, which is a visible dark fringe.
 
+### 5.0 The canvas is sized to the layers, not the other way round
+
+The canvas size and the layer scales above were chosen independently, and the shipping
+pairing left **81% of the canvas black**: a 358x178 coarse layer and a 512x256 fovea in
+1024x1024. Black costs almost no *bitrate* -- that reasoning was right -- but it is not
+free in *time*. The encoder still walks every macroblock, and with intra-refresh on it
+periodically codes them; the decoder then reconstructs them.
+
+So the canvas is shrunk to exactly the two layers: 1024x1024 becomes **512x512, four
+times fewer pixels**, with the layer pixel sizes unchanged.
+
+Nothing about the format changes, which is the good part. The band split stays at the
+midpoint, the header still carries the layer sizes, and the display shader works in
+canvas *fractions* -- so it cannot tell the difference and did not need a line changed.
+
+Measured at 1920x1200, defaults, H.264:
+
+| | padded 1024x1024 | tight 512x512 |
+|---|---|---|
+| encode, real sender | 3.79 ms/pair | **2.26 ms/pair** (1.68x) |
+| encode, encoder alone | 1.94 ms | **0.99 ms** (1.96x) |
+| decode (software) | 0.87 ms | **0.66 ms** (1.32x) |
+| reconstructed picture | — | **identical**, 0.00 dB PSNR difference |
+
+The end-to-end figure is smaller than the isolated one because a "pair" also includes
+building the atlas -- the downscale and the crop -- which does not change. The decode
+figure is the software reference decoder; on the headset that path is MediaCodec in
+hardware, where the saving has not been measured.
+
+**The headset asks for the tight canvas; the robot honours what it is asked for.** That
+split is not arbitrary. The canvas is a property of the *viewer's* decoder: it is what
+the native receiver allocates its destination texture at, and what every layer span is
+divided by. A robot that shrank the canvas unilaterally would leave a headset sampling
+the wrong part of the atlas -- a wrong picture rather than a failed one, and one that
+would read as a display bug. The robot tightens only the layout it chose itself, for the
+blind `--host` case and for clients that do not tighten their own request.
+
+Two properties make that safe, both swept in `selftest.py`: tightening never changes a
+layer's stored size by more than the 2px even-rounding both ends already do, and
+tightening twice is the same as tightening once.
+
 Measured at 1920x1200, 60 fps, H.264: plain full frame 20.0 Mbit/s, foveated at the
 defaults (coarse 358x178, fovea 512x256 at 1:1) **6.8 Mbit/s** -- 3x less bandwidth for
 a sharper centre.

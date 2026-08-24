@@ -357,6 +357,25 @@ public class GvStartMenu : MonoBehaviour
     private static readonly int[] CanvasSizes = { 512, 640, 768, 896, 1024, 1280 };
 
     /// <summary>
+    /// "1024x1024", or "1024 -&gt; 512x512" where tightening will shrink it.
+    ///
+    /// The canvas is cut down at connect time to whatever the two atlas layers actually
+    /// occupy, and a setting whose effect is invisible is one people mistrust -- this
+    /// one especially, because it looks like it controls sharpness and does not. The
+    /// layer scales below it are what do.
+    /// </summary>
+    private static string EffectiveCanvas(GvRobotProfile p)
+    {
+        int w, h;
+        float cs, fs;
+        GvAtlas.Tighten(p.canvasWidth, p.canvasHeight, p.coarseScale, p.foveaScale,
+                        out w, out h, out cs, out fs);
+        return (w == p.canvasWidth && h == p.canvasHeight)
+            ? string.Format("{0}x{1}", p.canvasWidth, p.canvasHeight)
+            : string.Format("{0} -> {1}x{2}", p.canvasWidth, w, h);
+    }
+
+    /// <summary>
     /// Step the transmitted canvas through sizes a hardware decoder is happy with.
     ///
     /// Bigger is more detail and more bandwidth, and costs encode and decode time on
