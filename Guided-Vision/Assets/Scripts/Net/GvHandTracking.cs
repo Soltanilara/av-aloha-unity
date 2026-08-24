@@ -1,3 +1,4 @@
+using System.Collections.Generic;
 using UnityEngine;
 
 /// <summary>
@@ -22,6 +23,11 @@ public class GvHandTracking : MonoBehaviour
     private float nextScan;
 
     private GvHandState left, right;
+    // Sent once per side, when the runtime first hands us a valid skeleton. The robot
+    // cannot know which of Meta's hand rigs is in use -- there is more than one, with
+    // different bone counts and different parent tables -- and a visualiser guessing
+    // draws confident nonsense. So the end that knows says so.
+    private readonly bool[] topologySent = new bool[2];
 
     public bool AnyTracked { get; private set; }
     public GvHandState Left => left;
@@ -81,6 +87,7 @@ public class GvHandTracking : MonoBehaviour
                 Fill(ref right, h, sk);
             else
                 Fill(ref left, h, sk);
+            PublishTopology(sk, isRight);
             AnyTracked = true;
         }
     }
@@ -112,6 +119,38 @@ public class GvHandTracking : MonoBehaviour
                 : t.position;
         }
         s.JointCount = written;
+    }
+
+    /// <summary>
+    /// Publish this hand's parent table, once, on the control channel.
+    ///
+    /// Joint *positions* still travel absolute in the uplink, so a robot that only wants
+    /// poses needs none of this. It is here for anything that has to draw or retarget,
+    /// which cannot do either without knowing what connects to what.
+    /// </summary>
+    private void PublishTopology(OVRSkeleton sk, bool isRight)
+    {
+        int idx = isRight ? 1 : 0;
+        if (topologySent[idx])
+            return;
+        var bones = sk.Bones;
+        if (bones == null || bones.Count == 0)
+            return;
+
+        var parents = new List<object>(bones.Count);
+        for (int b = 0; b < bones.Count; b++)
+            parents.Add((long)(bones[b] != null ? bones[b].ParentBoneIndex : -1));
+
+        var session = GvRobotSession.Instance;
+        if (session == null || session.Link == null || !session.Link.Connected)
+            return;                        // retry next frame; nothing is lost by waiting
+        session.Link.Publish("hand/skeleton", GvRobotSession.Map(
+            "side", isRight ? "r" : "l",
+            "parents", parents,
+            "count", (long)bones.Count));
+        topologySent[idx] = true;
+        Debug.Log($"GvHandTracking: published {(isRight ? "right" : "left")} skeleton, "
+                  + $"{bones.Count} bones.");
     }
 
     private static float Strength(OVRHand h, OVRHand.HandFinger f)

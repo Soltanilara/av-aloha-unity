@@ -15,6 +15,13 @@ stays "exactly what the headset saw" and each consumer picks its own convention 
 wants Z up, this viewer wants Y up, and a headset guessing between them would be wrong
 for somebody. Flipping Z gives a right-handed frame: positions become (x, y, -z) and a
 rotation (x, y, z, w) becomes (-x, -y, z, w).
+
+One consequence worth stating, because it caused a bug here: Unity's forward is +Z, so
+after the flip the operator looks down **-Z**, the OpenGL camera convention. viser's
+camera frustum uses the OpenCV one (+Z forward, +Y down), so drawing the head pose
+straight into a frustum points it backwards and upside down. The frustum therefore gets
+an extra 180 degrees about X. A short forward ray is drawn alongside it so that "which
+way is the operator facing" never depends on remembering that.
 """
 
 from __future__ import annotations
@@ -25,19 +32,60 @@ import numpy as np
 
 from .protocol import FINGERS, HeadsetInput
 
-# Meta's hand skeleton, as parent indices. Bone 0 is the wrist; each entry is the joint
-# its bone starts from. Used only to draw connecting lines -- the joint positions
-# themselves arrive absolute, so a wrong entry here is a cosmetic problem, not a
-# geometric one.
-_HAND_PARENTS = (
-    0, 0, 0,                 # wrist, forearm stub, thumb trapezium
-    2, 3, 4,                 # thumb
-    0, 6, 7,                 # index
-    0, 9, 10,                # middle
-    0, 12, 13,               # ring
-    0, 15, 16, 17,           # pinky
-    5, 8, 11, 14, 18,        # finger tips, parented to the last joint of each finger
-)
+# No hard-coded skeleton. Meta ships more than one hand rig (24 bones for the classic,
+# 26 for the XR one) and the parent table differs between them, so guessing produced
+# lines that connected the wrong joints -- which looks like broken tracking rather than
+# a broken drawing. The headset knows its own topology and now sends it on the control
+# channel (`hand/skeleton`); until it arrives, joints are drawn without bones. Fewer
+# lines is a far better failure than wrong ones.
+
+
+# --------------------------------------------------------------------- quaternions
+# (x, y, z, w) throughout, matching the wire. Small and self-contained: pulling in a
+# rotation library for four operations would be a dependency for the robot to carry.
+
+def _qmul(a, b):
+    ax, ay, az, aw = a
+    bx, by, bz, bw = b
+    return (aw * bx + ax * bw + ay * bz - az * by,
+            aw * by - ax * bz + ay * bw + az * bx,
+            aw * bz + ax * by - ay * bx + az * bw,
+            aw * bw - ax * bx - ay * by - az * bz)
+
+
+def _qconj(q):
+    x, y, z, w = q
+    return (-x, -y, -z, w)
+
+
+def _qrot(q, v):
+    """Rotate v by unit quaternion q."""
+    x, y, z, w = q
+    tx = 2.0 * (y * v[2] - z * v[1])
+    ty = 2.0 * (z * v[0] - x * v[2])
+    tz = 2.0 * (x * v[1] - y * v[0])
+    return (v[0] + w * tx + (y * tz - z * ty),
+            v[1] + w * ty + (z * tx - x * tz),
+            v[2] + w * tz + (x * ty - y * tx))
+
+
+def _yaw_only(q):
+    """
+    The heading part of a rotation, about the world up axis.
+
+    Used for the view anchor: anchoring to the full head pose would tilt the entire
+    scene by whatever the operator's neck happened to be doing at the instant the button
+    was pressed, which is the opposite of making it easier to read.
+    """
+    _x, y, _z, w = q
+    n = math.hypot(y, w)
+    return (0.0, 0.0, 0.0, 1.0) if n < 1e-9 else (0.0, y / n, 0.0, w / n)
+
+
+# 180 degrees about X: -Z-forward/+Y-up (what the conversion above yields) into
+# +Z-forward/+Y-down (what viser's camera frustum expects).
+_GL_TO_CV = (1.0, 0.0, 0.0, 0.0)
+
 
 _LEFT = (90, 170, 255)
 _RIGHT = (255, 150, 90)
@@ -73,12 +121,70 @@ class HeadsetViz:
         import viser                     # deferred: optional dependency
 
         self.server = viser.ViserServer(port=port, label=label)
+        # The wire frame is Y-up. viser defaults to Z-up, so without this the whole scene
+        # arrives lying on its side -- which is most of why it was hard to read.
+        try:
+            self.server.scene.set_up_direction("+y")
+        except Exception:
+            pass                            # older viser; the axes still say which way
         self.server.scene.world_axes.visible = True
         self._hand_nodes: dict[str, list] = {"L": [], "R": []}
         self._ctrl_nodes: list = []
         self._head = None
+        self._ray = None
         self._source = None
+        self._parents: dict[str, tuple] = {}
+        self._anchor = None                 # (position, yaw quaternion) or None
+        self._last_head = None
         self.url = f"http://localhost:{port}"
+        self._build_gui()
+
+    def _build_gui(self) -> None:
+        with self.server.gui.add_folder("View"):
+            centre = self.server.gui.add_button("Centre on headset")
+            reset = self.server.gui.add_button("Clear anchor")
+            self._status = self.server.gui.add_text("Anchor", initial_value="world",
+                                                    disabled=True)
+
+        @centre.on_click
+        def _(_evt) -> None:
+            if self._last_head is None:
+                self._status.value = "no head pose yet"
+                return
+            pos, rot = self._last_head
+            self._anchor = (pos, _yaw_only(rot))
+            self._status.value = "headset"
+
+        @reset.on_click
+        def _(_evt) -> None:
+            self._anchor = None
+            self._status.value = "world"
+
+    def set_skeleton(self, side: str, parents) -> None:
+        """
+        Tell the viewer how this hand's joints connect.
+
+        Sent by the headset rather than assumed here: it is the only end that knows which
+        of Meta's hand rigs the runtime picked, and a parent table that is right for one
+        of them draws confident nonsense for the other.
+        """
+        key = side.upper()[:1]
+        self._parents[key] = tuple(int(v) for v in parents)
+        # Nothing to redraw here: the next update() rebuilds the segments from it.
+
+    # ------------------------------------------------------------------ anchoring
+
+    def _anchored(self, pos, rot=None):
+        """Re-express a pose relative to the anchor, if one is set."""
+        if self._anchor is None:
+            return pos if rot is None else (pos, rot)
+        apos, arot = self._anchor
+        inv = _qconj(arot)
+        d = (pos[0] - apos[0], pos[1] - apos[1], pos[2] - apos[2])
+        p = _qrot(inv, d)
+        if rot is None:
+            return p
+        return p, _qmul(inv, rot)
 
     # ------------------------------------------------------------------ drawing
 
@@ -100,16 +206,32 @@ class HeadsetViz:
         self._source = source
 
     def _draw_head(self, p: HeadsetInput) -> None:
-        pos, rot = to_right_handed(p.head_pos, p.head_rot)
+        world = to_right_handed(p.head_pos, p.head_rot)
+        self._last_head = world             # what "centre on headset" captures
+        pos, rot = self._anchored(*world)
+
+        # The frustum's own convention is +Z forward, +Y down; ours is -Z forward,
+        # +Y up. Without this the head points behind the operator and upside down.
+        frust = _qmul(rot, _GL_TO_CV)
+        # Forward is -Z after the handedness flip, so the ray runs that way.
+        tip = _qrot(rot, (0.0, 0.0, -0.35))
+        ray = np.array([[pos, (pos[0] + tip[0], pos[1] + tip[1], pos[2] + tip[2])]],
+                       dtype=np.float32)
+
         if self._head is None:
-            # A frustum rather than bare axes: it shows which way the operator is facing
-            # at a glance, which is the thing you actually want to know.
             self._head = self.server.scene.add_camera_frustum(
                 "/head", fov=math.radians(64.0), aspect=16 / 10, scale=0.18,
-                color=_HEAD, wxyz=_wxyz(rot), position=pos)
+                color=_HEAD, wxyz=_wxyz(frust), position=pos)
+            # Drawn as well as the frustum, not instead: a line is unambiguous about
+            # direction whatever convention the frustum turns out to use, and this is
+            # exactly the question the view exists to answer.
+            self._ray = self.server.scene.add_line_segments(
+                "/head/gaze", points=ray, colors=np.array((255, 230, 120), np.uint8),
+                thickness=3.0, thickness_units="screen")
         else:
             self._head.position = pos
-            self._head.wxyz = _wxyz(rot)
+            self._head.wxyz = _wxyz(frust)
+            self._ray.points = ray
 
     def _draw_hand(self, side: str, hand) -> None:
         nodes = self._hand_nodes[side]
@@ -119,13 +241,14 @@ class HeadsetViz:
             return
 
         colour = _LEFT if side == "L" else _RIGHT
-        pts = np.array([to_right_handed(j) for j in hand.joints], dtype=np.float32)
+        pts = np.array([self._anchored(to_right_handed(j)) for j in hand.joints],
+                       dtype=np.float32)
 
-        # Bones, as segment pairs. Parents beyond what this skeleton has are skipped
-        # rather than clamped, so an unfamiliar skeleton draws fewer lines instead of
-        # nonsense ones.
-        seg = [(pts[i], pts[par]) for i, par in enumerate(_HAND_PARENTS)
-               if i < len(pts) and par < len(pts) and i != par]
+        # Bones only when the headset has told us how this rig connects. No table means
+        # no lines, which reads as "topology unknown" rather than as broken tracking.
+        parents = self._parents.get(side, ())
+        seg = [(pts[i], pts[par]) for i, par in enumerate(parents)
+               if i < len(pts) and 0 <= par < len(pts) and i != par]
         segments = np.array(seg, dtype=np.float32) if seg else np.zeros((0, 2, 3), np.float32)
 
         # Pinch strength drives the joint size, so a grasp is visible without reading a
@@ -141,7 +264,7 @@ class HeadsetViz:
                 f"/hand{side}/bones", points=segments,
                 colors=np.array(colour, np.uint8), thickness=2.5,
                 thickness_units="screen"))
-            pos, rot = to_right_handed(hand.wrist_pos, hand.wrist_rot)
+            pos, rot = self._anchored(*to_right_handed(hand.wrist_pos, hand.wrist_rot))
             nodes.append(self.server.scene.add_frame(
                 f"/hand{side}/wrist", axes_length=0.06, axes_radius=0.003,
                 wxyz=_wxyz(rot), position=pos))
@@ -149,7 +272,7 @@ class HeadsetViz:
             nodes[0].points = pts
             nodes[0].point_size = size
             nodes[1].points = segments
-            pos, rot = to_right_handed(hand.wrist_pos, hand.wrist_rot)
+            pos, rot = self._anchored(*to_right_handed(hand.wrist_pos, hand.wrist_rot))
             nodes[2].position = pos
             nodes[2].wxyz = _wxyz(rot)
         for n in nodes:
@@ -159,14 +282,14 @@ class HeadsetViz:
         pairs = (("L", p.left, _LEFT), ("R", p.right, _RIGHT))
         if not self._ctrl_nodes:
             for side, c, colour in pairs:
-                pos, rot = to_right_handed(c.pos, c.rot)
+                pos, rot = self._anchored(*to_right_handed(c.pos, c.rot))
                 self._ctrl_nodes.append(self.server.scene.add_frame(
                     f"/controller{side}", axes_length=0.10, axes_radius=0.006,
                     origin_radius=0.012, origin_color=colour,
                     wxyz=_wxyz(rot), position=pos))
         else:
             for node, (_side, c, _colour) in zip(self._ctrl_nodes, pairs):
-                pos, rot = to_right_handed(c.pos, c.rot)
+                pos, rot = self._anchored(*to_right_handed(c.pos, c.rot))
                 node.position = pos
                 node.wxyz = _wxyz(rot)
                 node.visible = True

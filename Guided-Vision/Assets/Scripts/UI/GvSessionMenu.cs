@@ -273,6 +273,13 @@ public class GvSessionMenu : MonoBehaviour
                 });
             items.Add(new GvMenuItem
             {
+                Label = "Stats readout",
+                Value = () => display.StatsMode.ToString().ToLowerInvariant(),
+                Adjust = dir => display.CycleStats(dir),
+                Activate = () => display.CycleStats(1),
+            });
+            items.Add(new GvMenuItem
+            {
                 Label = "Outline the sharp patch",
                 Value = () => display.foveaOutline ? "on" : "off",
                 Adjust = _ => display.foveaOutline = !display.foveaOutline,

@@ -119,7 +119,10 @@ public class GvStereoDisplay : MonoBehaviour
              "and exists only for a scene still running the two-camera rig.")]
     public bool isolateEyeLayers = false;
 
-    public bool showStats = true;
+    [Tooltip("How much telemetry to show. Off is a legitimate default once a link is " +
+             "trusted: the centre of the view is where the work is, and the video is " +
+             "the point.")]
+    public GvHudMode statsMode = GvHudMode.Compact;
 
     // ------------------------------------------------------------------ per-eye state
 
@@ -154,6 +157,7 @@ public class GvStereoDisplay : MonoBehaviour
     // the value changes only when something asks it to.
     private float cachedHz;
     private GvSceneCommands sceneCommands;
+    private GvHud hud;
     private float statsTimer;
     private const float StatsInterval = 0.25f;
     private float reportTimer;
@@ -168,6 +172,7 @@ public class GvStereoDisplay : MonoBehaviour
         BindEyeObjects();
         SetUpEyeMaterials();
         ConfigureDisplay();
+        SetUpHud();
         ApplyStereoLayout();
 
         link = new GvVideoLink();
@@ -497,6 +502,27 @@ public class GvStereoDisplay : MonoBehaviour
     }
 
     /// <summary>
+    /// Stand up the code-built readout and switch the scene's own debug canvas off.
+    ///
+    /// The old one is a leftover sized for reading a log on a monitor: large type, dead
+    /// centre, permanently on. In a headset that is directly over the manipulation area.
+    /// </summary>
+    private void SetUpHud()
+    {
+        hud = FindAnyObjectByType<GvHud>(FindObjectsInactive.Include);
+        if (hud == null)
+            hud = gameObject.AddComponent<GvHud>();
+        hud.Mode = statsMode;
+
+        if (debugText != null)
+        {
+            var legacy = debugText.GetComponentInParent<Canvas>();
+            if (legacy != null)
+                legacy.gameObject.SetActive(false);
+        }
+    }
+
+    /// <summary>
     /// Place one eye's quad so a pixel appears in the direction its camera ray pointed.
     ///
     /// The quad's angular size comes from the focal length, and its *offset* from the
@@ -529,8 +555,23 @@ public class GvStereoDisplay : MonoBehaviour
         eye.canvasRect.localPosition = new Vector3(shiftX, shiftY, distance);
     }
 
+    /// <summary>Cycle the readout: off, one line, everything.</summary>
+    public GvHudMode CycleStats(int dir)
+    {
+        if (hud == null)
+            return GvHudMode.Off;
+        statsMode = hud.Cycle(dir);
+        return statsMode;
+    }
+
+    public GvHudMode StatsMode => hud != null ? hud.Mode : statsMode;
+
     public void ApplyHudDistance()
     {
+        // The code-built readout re-places itself; the legacy canvas is off.
+        if (hud != null)
+            hud.Recentre();
+
         if (debugText == null)
             return;
         if (hudCanvasRect == null)
@@ -603,7 +644,7 @@ public class GvStereoDisplay : MonoBehaviour
             ReportToRobot();
         }
 
-        if (!showStats || debugText == null)
+        if (hud == null || hud.Mode == GvHudMode.Off)
             return;
         statsTimer += Time.unscaledDeltaTime;
         if (statsTimer < StatsInterval)
@@ -742,15 +783,30 @@ public class GvStereoDisplay : MonoBehaviour
         frameStats.Flush();
         cachedHz = DisplayHz;
         float hz = cachedHz;
+        var rlink = session != null ? session.Link : null;
+        bool up = rlink != null && rlink.Connected;
+
+        if (hud.Mode == GvHudMode.Compact)
+        {
+            // One line, and only what you would turn your head to check: is the robot
+            // there, is the picture arriving, is the headset keeping up. Everything else
+            // is a debugging question and lives in Full.
+            stats.AppendFormat("{0} {1}   {2:0.0} Mbit/s   {3:0} fps",
+                up ? "<color=#6FD48A>\u25CF</color>" : "<color=#F09A5A>\u25CF</color>",
+                up ? "link" : "no link", mbps, frameStats.Fps);
+            if (frameStats.Missed > 0)
+                stats.AppendFormat("   <color=#F09A5A>{0} missed</color>", frameStats.Missed);
+            hud.Set(stats.ToString());
+            return;
+        }
         stats.AppendFormat("{0:0.0} Mbit/s   render {1:0.0} fps / {2:0} Hz   worst {3:0.0} ms   " +
                            "missed {4}/{5}   {6}{7}\n",
             mbps, frameStats.Fps, hz, frameStats.WorstMs, frameStats.Missed, frameStats.Frames,
             UnityEngine.XR.XRSettings.stereoRenderingMode,
             link != null && link.IsSoftwarePath ? "   [mjpeg/software]" : "");
-        var rl = session != null ? session.Link : null;
-        if (rl != null)
+        if (rlink != null)
             stats.AppendFormat("link {0}  in {1} out {2}   {3}\n",
-                rl.Connected ? "up" : "down", rl.MessagesIn, rl.MessagesOut, robotStatus);
+                up ? "up" : "down", rlink.MessagesIn, rlink.MessagesOut, robotStatus);
         if (sceneCommands == null)
             sceneCommands = FindAnyObjectByType<GvSceneCommands>(FindObjectsInactive.Include);
         if (sceneCommands != null && (sceneCommands.MarkersReceived > 0
@@ -761,7 +817,7 @@ public class GvStereoDisplay : MonoBehaviour
         AppendGazeStats();
         AppendEyeStats(left);
         AppendEyeStats(right);
-        debugText.text = stats.ToString();
+        hud.Set(stats.ToString());
     }
 
     /// <summary>

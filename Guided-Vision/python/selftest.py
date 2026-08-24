@@ -11,6 +11,7 @@ the non-foveated fallback, and the reassembler's behaviour under packet loss.
 
 from __future__ import annotations
 
+import math
 import socket
 import sys
 import threading
@@ -471,6 +472,53 @@ def main() -> int:
     check("survives retargeting from another thread while encoding",
           not err and enc.rebuilds > 0, f"{enc.rebuilds} rebuilds {'; '.join(err)}")
     enc.close()
+
+    print("viz frames")
+    from gvlink.viz import (_GL_TO_CV, _qconj, _qmul, _qrot, _yaw_only,
+                            to_right_handed)
+
+    # Unity is left-handed with +Z forward. Flipping Z gives a right-handed frame in
+    # which the operator looks down -Z. Getting this backwards pointed the headset
+    # frustum behind the operator, which is exactly how it looked.
+    ident = (0.0, 0.0, 0.0, 1.0)
+    pos, rot = to_right_handed((1.0, 2.0, 3.0), ident)
+    check("position flips Z", pos == (1.0, 2.0, -3.0), str(pos))
+
+    fwd = _qrot(rot, (0.0, 0.0, -1.0))
+    check("an unrotated head looks down -Z", abs(fwd[2] + 1) < 1e-6, str(r3(fwd)))
+
+    # A 90 degree yaw in Unity (about +Y, left-handed) turns the operator to their right.
+    yaw90 = (0.0, math.sin(math.pi / 4), 0.0, math.cos(math.pi / 4))
+    _, r = to_right_handed((0, 0, 0), yaw90)
+    f = _qrot(r, (0.0, 0.0, -1.0))
+    check("a Unity yaw turns the right way", abs(f[0] - 1.0) < 1e-6 and abs(f[2]) < 1e-6,
+          f"forward {r3(f)}")
+
+    # The frustum correction must take -Z-forward/+Y-up to +Z-forward/+Y-down.
+    fr = _qmul(rot, _GL_TO_CV)
+    cam_fwd, cam_up = _qrot(fr, (0.0, 0.0, 1.0)), _qrot(fr, (0.0, 1.0, 0.0))
+    check("frustum +Z lands on the operator's forward",
+          abs(cam_fwd[2] + 1) < 1e-6, str(r3(cam_fwd)))
+    check("frustum +Y lands on the operator's down",
+          abs(cam_up[1] + 1) < 1e-6, str(r3(cam_up)))
+
+    # The view anchor must put the head at the origin without tilting the world.
+    tilted = _qmul((0.0, math.sin(0.3), 0.0, math.cos(0.3)),
+                   (math.sin(0.25), 0.0, 0.0, math.cos(0.25)))     # yaw then pitch
+    y = _yaw_only(tilted)
+    check("the anchor keeps heading and drops tilt",
+          abs(y[0]) < 1e-9 and abs(y[2]) < 1e-9 and abs(_qrot(y, (0, 1, 0))[1] - 1) < 1e-9,
+          str(r3(y[:3])))
+
+    apos, arot = (0.5, 1.6, -2.0), y
+    inv = _qconj(arot)
+    d = tuple(a - b for a, b in zip(apos, apos))
+    check("the anchored head sits at the origin",
+          max(abs(v) for v in _qrot(inv, d)) < 1e-9)
+    moved = (apos[0] + 1.0, apos[1], apos[2])
+    rel = _qrot(inv, tuple(m - a for m, a in zip(moved, apos)))
+    check("  and a metre away stays a metre away",
+          abs(math.sqrt(sum(v * v for v in rel)) - 1.0) < 1e-9, str(r3(rel)))
 
     print("headset ui wire format")
     # A recording link: HeadsetUi is a front for publish(), so what matters is that the

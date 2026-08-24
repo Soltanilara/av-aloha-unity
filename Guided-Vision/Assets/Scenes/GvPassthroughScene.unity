@@ -212,7 +212,7 @@ MonoBehaviour:
   useMaxDisplayFrequency: 1
   maxDisplayFrequency: 90
   isolateEyeLayers: 0
-  showStats: 1
+  statsMode: 1
 --- !u!4 &116832836
 Transform:
   m_ObjectHideFlags: 0

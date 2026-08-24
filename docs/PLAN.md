@@ -654,6 +654,32 @@ everything a fixed vocabulary will not cover. The lever that makes "never touch 
 app again" true is `ui/menu`: robot-declared rows in the session menu, which turns episode
 recording, calibration and mode switching into Python.
 
+**The headset sends its own hand topology (2026-08-23).** `GvHandState`'s comment says
+joints travel as positions precisely so the robot need know nothing about Meta's skeleton
+-- no bone lengths, no parent table, no handedness convention. Correct for a *consumer* of
+poses, and not enough for a *drawer* of them: the viser view guessed a parent table, and
+Meta ships more than one hand rig (24 bones classic, 26 XR) with different tables, so it
+connected the wrong joints and looked like broken tracking. The headset now publishes
+`hand/skeleton` once per side with the runtime's actual `ParentBoneIndex` list, and the
+viewer draws no bones at all until it arrives. Fewer lines is a much better failure than
+wrong ones.
+
+**Unity's forward becomes -Z in the converted frame (2026-08-23).** Flipping Z to get a
+right-handed frame also flips what "forward" means: Unity looks down +Z, so the converted
+pose looks down -Z -- the OpenGL camera convention. viser's frustum uses the OpenCV one
+(+Z forward, +Y down), so feeding it the converted head pose pointed the operator
+backwards and upside down. The frustum now carries an extra 180 degrees about X, and a
+forward ray is drawn beside it so that "which way is the operator facing" never rests on
+remembering any of this. Four selftest cases pin the conversion, the yaw direction and
+both frustum axes.
+
+**The viser scene is Y-up and can be anchored to the headset (2026-08-23).** viser
+defaults to Z-up while the wire frame is Y-up, so the whole scene arrived on its side --
+most of why it was unreadable. A "Centre on headset" button re-expresses everything
+relative to the current head pose, using **yaw only**: anchoring to the full pose would
+tilt the entire scene by whatever the operator's neck was doing at the instant the button
+was pressed, which is the opposite of making it legible.
+
 **Hands and controllers are alternatives, not additions (2026-08-23).** The runtime hands
 you one or the other, so both travel in the same packet and only the live one is marked
 valid. When hands are tracked the controller poses go out invalid rather than stale --

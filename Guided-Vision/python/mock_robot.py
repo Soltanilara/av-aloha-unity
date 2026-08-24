@@ -401,6 +401,19 @@ def main() -> int:
 
     link.subscribe("viewer/stats", on_viewer_stats)
 
+    # The headset tells us how its hand rig connects; the visualiser cannot draw bones
+    # correctly without it and deliberately draws none until it arrives.
+    def on_skeleton(d):
+        if viz is None or not isinstance(d, dict):
+            return
+        parents = d.get("parents")
+        if not parents:
+            return
+        viz.set_skeleton(str(d.get("side", "l")), parents)
+        print(f"hand skeleton: {d.get('side')} {len(parents)} bones")
+
+    link.subscribe("hand/skeleton", on_skeleton)
+
     # A moving target and a couple of markers, so the headset end can be checked on a
     # device without writing any robot code first. Guidance the operator can walk to is
     # the only way to tell a working guide from one that merely renders.
