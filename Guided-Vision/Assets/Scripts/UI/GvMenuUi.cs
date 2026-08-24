@@ -48,13 +48,22 @@ public static class GvMenuUi
     public static readonly Color StepHot = new Color(0.45f, 0.80f, 0.55f, 0.55f);
     public static readonly Color Hover = new Color(0.20f, 0.45f, 0.75f, 0.45f);
 
-    public static Canvas CreateCanvas(Transform parent, string name, Vector2 sizePx)
+    /// <param name="sortingOrder">
+    /// Draw order against the other world-space canvases in the scene. Two transparent
+    /// canvases at the same order are sorted back-to-front by distance, so a menu that
+    /// happens to sit further away than a full-screen video quad is painted over and
+    /// vanishes -- exactly what happened to the in-session menu. Anything that must be
+    /// readable on top of the video says so here rather than relying on where it landed.
+    /// </param>
+    public static Canvas CreateCanvas(Transform parent, string name, Vector2 sizePx,
+                                      int sortingOrder = 0)
     {
         var go = new GameObject(name, typeof(RectTransform), typeof(Canvas),
                                 typeof(CanvasScaler), typeof(GraphicRaycaster));
         go.transform.SetParent(parent, false);
         var canvas = go.GetComponent<Canvas>();
         canvas.renderMode = RenderMode.WorldSpace;
+        canvas.sortingOrder = sortingOrder;
 
         var rt = (RectTransform)go.transform;
         rt.sizeDelta = sizePx;
@@ -122,6 +131,41 @@ public static class GvMenuUi
         rt.anchoredPosition = new Vector2(0f, -y);
         rt.sizeDelta = new Vector2(0f, height);
         return rt;
+    }
+
+    /// <summary>
+    /// Where a pointer ray meets a menu panel, and which row it is over.
+    ///
+    /// Shared rather than written per menu: the panel geometry, the y-flip, the "must be
+    /// inside the list viewport, not merely inside the panel" rule and the stepper zones
+    /// are all easy to get subtly wrong, and two copies would drift the moment one menu
+    /// gained a feature.
+    ///
+    /// Returns false when the ray misses the panel entirely.
+    /// </summary>
+    public static bool RayHit(RectTransform panel, Ray ray, out Vector3 world, out Vector2 local)
+    {
+        world = Vector3.zero;
+        local = Vector2.zero;
+        if (panel == null)
+            return false;
+        var plane = new Plane(panel.forward, panel.position);
+        float dist;
+        if (!plane.Raycast(ray, out dist))
+            return false;
+        world = ray.GetPoint(dist);
+        Vector3 lp = panel.InverseTransformPoint(world);
+        local = new Vector2(lp.x, lp.y);
+        return panel.rect.Contains(local);
+    }
+
+    /// <summary>True when a world point falls inside this rect.</summary>
+    public static bool Contains(RectTransform rt, Vector3 world)
+    {
+        if (rt == null)
+            return false;
+        Vector3 lp = rt.InverseTransformPoint(world);
+        return rt.rect.Contains(new Vector2(lp.x, lp.y));
     }
 
     /// <summary>A small pill button pinned to the panel's top-right corner.</summary>

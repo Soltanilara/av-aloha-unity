@@ -11,19 +11,23 @@ the non-foveated fallback, and the reassembler's behaviour under packet loss.
 
 from __future__ import annotations
 
+import socket
 import sys
+import time
 
 import numpy as np
 
 import cv2
 from gvlink.foveal import AtlasLayout, SaccadeWidener, build_atlas, reconstruct
 from gvlink.camera import CameraParams, EyeIntrinsics
+from gvlink.protocol import HandState
 from gvlink.ratecontrol import BitrateController
 from gvlink.pattern import make_chart
 from gvlink.protocol import (BUTTON_ONE, BUTTON_STICK, BUTTON_TWO, EYE_LEFT,
                              INPUT_GAZE_VALID, INPUT_HEAD_VALID, INPUT_LEFT_VALID,
                              INPUT_SIZE, HeadsetInput, Reassembler, VideoHeader,
                              fragment, now_us)
+from gvlink.robotlink import ControlClient, RobotLink
 from gvlink.stream import EyeStreamReceiver, EyeStreamSender, make_udp_socket
 
 FAILS: list[str] = []
@@ -33,6 +37,25 @@ def check(name: str, ok: bool, detail: str = "") -> None:
     print(f"  {'PASS' if ok else 'FAIL'}  {name}{'  ' + detail if detail else ''}")
     if not ok:
         FAILS.append(name)
+
+
+def _free_port() -> int:
+    s = socket.socket()
+    s.bind(("127.0.0.1", 0))
+    p = s.getsockname()[1]
+    s.close()
+    return p
+
+
+def _await(fn, timeout: float = 3.0):
+    """Poll until fn() returns something truthy, or give up. Returns None on timeout."""
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        v = fn()
+        if v is not None:
+            return v
+        time.sleep(0.005)
+    return None
 
 
 def spans(header, canvas):
@@ -278,6 +301,51 @@ def main() -> int:
     off.update((0.1, 0.1), 0.0)
     check("max_zoom=1.0 disables it", abs(off.update((0.9, 0.9), 0.011) - 1.0) < 1e-6)
 
+    print("hands and controllers")
+    joints = tuple((i * 0.01, i * 0.02, i * 0.03) for i in range(24))
+    hl = HandState(True, 0.9, (0.11, 1.22, 0.33), (0, 0.7071, 0, 0.7071),
+                   pinch=(0.0, 0.8, 0.25, 0.0, 1.0), joints=joints)
+    hr = HandState(False)
+
+    plain = HeadsetInput(seq=1, flags=INPUT_LEFT_VALID)
+    check("a controller session still costs exactly 158 bytes",
+          len(plain.pack()) == 158, f"{len(plain.pack())} bytes")
+    check("  and reports controllers",
+          HeadsetInput.unpack(plain.pack()).source == "controllers")
+
+    withhands = HeadsetInput(seq=2, head_pos=(0, 1.6, 0), hand_l=hl, hand_r=hr,
+                             extras={"note": "tail still works"})
+    blob = withhands.pack()
+    g = HeadsetInput.unpack(blob)
+    check("hands ride along without disturbing the fixed part",
+          g is not None and g.seq == 2 and abs(g.head_pos[1] - 1.6) < 1e-6,
+          f"{len(blob)} bytes")
+    check("  source says hands", g.source == "hands", g.source if g else "-")
+    check("  joints survive", g.hand_l.joint_count == 24
+          and abs(g.hand_l.joints[23][2] - 0.69) < 1e-4)
+    check("  pinch survives", abs(g.hand_l.pinch_of("index") - 0.8) < 0.01
+          and abs(g.hand_l.pinch_of("pinky") - 1.0) < 0.01)
+    check("  wrist pose survives", abs(g.hand_l.wrist_pos[1] - 1.22) < 1e-4)
+    check("  an untracked hand costs almost nothing",
+          not g.hand_r.tracked and g.hand_r.joint_count == 0)
+    check("  the msgpack tail still parses after the hand block",
+          g.extras == {"note": "tail still works"}, str(g.extras))
+
+    # The flag is written by pack(); a packet built in memory has hands and a zero flag.
+    # Reading the flag alone called that a controller session, which is how the
+    # visualiser came to draw nothing at all.
+    check("hands are detected on an unpacked-in-memory packet too",
+          HeadsetInput(seq=3, hand_l=hl).source == "hands")
+
+    truncated = blob[:200]
+    check("a packet cut mid-hand is rejected, not half-read",
+          HeadsetInput.unpack(truncated) is None)
+
+    bad = bytearray(plain.pack())
+    bad[4] = 2                     # the previous version
+    check("a v2 packet is rejected rather than misread as hands",
+          HeadsetInput.unpack(bytes(bad)) is None)
+
     print("camera parameters")
     cam = CameraParams(1920, 1200,
                        EyeIntrinsics(1050.0, 990.0, 930.0, 615.0),
@@ -367,6 +435,62 @@ def main() -> int:
     c4.update(60.0, 0.0, 90.0)
     check("the delay baseline drifts up on a slower path",
           c4.baseline_ms > 20.0, f"baseline {c4.baseline_ms:.0f} ms")
+
+    print("reconnect")
+    # The headset menu's Reconnect drops the control channel and immediately redials with
+    # identical settings. On a LAN both transitions land inside a single frame of the send
+    # loop, so it never observes a None session -- and when the sender keyed its "is this
+    # a new viewer" decision on (address, codec, shape), a reconnect was indistinguishable
+    # from nothing happening. The encoders kept running mid-GOP while the headset's newly
+    # built decoder waited for a keyframe that never came: reconnect, then a black screen.
+    port = _free_port()
+    link = RobotLink(port=port).start()
+    try:
+        def dial():
+            return ControlClient("127.0.0.1", port, video_port=15552, codec=1,
+                                 foveation=True, name="Oculus Quest 2").start()
+
+        def settings_of(sess):
+            return ((sess.addr, sess.video_port), sess.codec, sess.layout_key())
+
+        c1 = dial()
+        s1 = _await(lambda: link.session)
+        check("a viewer is seen", s1 is not None)
+
+        c1.stop()
+        s2 = _await(lambda: link.session if (link.session is not None
+                                             and link.session.id != s1.id) else None)
+        c2_alive = dial() if s2 is None else None
+        if s2 is None:
+            s2 = _await(lambda: link.session if (link.session is not None
+                                                 and link.session.id != s1.id) else None)
+
+        check("a reconnect produces a second session", s2 is not None)
+        if s1 is not None and s2 is not None:
+            check("  whose settings are byte-identical to the first",
+                  settings_of(s1) == settings_of(s2))
+            check("  so only the session id distinguishes them",
+                  s1.id != s2.id, f"{s1.id} vs {s2.id}")
+            check("  and the sender's change key therefore differs",
+                  (s1.id,) + settings_of(s1) != (s2.id,) + settings_of(s2))
+        if c2_alive is not None:
+            c2_alive.stop()
+    finally:
+        link.stop()
+
+    # A rebuilt sender must open on a keyframe, or rebuilding it would not have helped.
+    rx_sock = make_udp_socket(("127.0.0.1", 0))
+    rx_sock.settimeout(2.0)
+    tx_sock = make_udp_socket()
+    fresh = EyeStreamSender(tx_sock, rx_sock.getsockname(), EYE_LEFT,
+                            AtlasLayout(512, 512, 0.25, 0.75), fps=30,
+                            bitrate_kbps=8000)
+    _, canvas = round_trip(fresh, rx_sock, EyeStreamReceiver(EYE_LEFT),
+                           make_chart(1280, 800), (0.5, 0.5))
+    check("a freshly built sender's first frame decodes on its own",
+          canvas is not None and canvas.size > 0)
+    tx_sock.close()
+    rx_sock.close()
 
     print("reassembler under loss")
     r = Reassembler()

@@ -198,6 +198,63 @@ Retargeting the encoder costs **0.49 ms** and one keyframe (libx264 fixes rate c
 open, so a new target means a new encoder; the canvas never changes size, so the decoder
 never notices). `--no-adapt` holds it fixed, `--min-bitrate` sets the floor.
 
+## Hands or controllers
+
+The runtime gives you one or the other, so the uplink sends whichever is live and says
+which it is:
+
+```python
+p = input_rx.fresh()
+if p.source == "hands":
+    wrist = p.hand_l.wrist_pos            # tracking space
+    grip  = p.hand_l.pinch_of("index")    # 0..1, straight to a gripper
+    for j in p.hand_l.joints:             # 24 or 26 positions, same frame
+        ...
+elif p.source == "controllers":
+    wrist = p.left.pos
+    grip  = p.left.trigger
+```
+
+`source` matters more than it looks: a robot mapping a wrist to an end effector has to
+know which stream to believe on the frame the operator puts a controller down, and
+inferring that from empty poses is guesswork. When hands are live the controller poses
+are sent invalid rather than stale, so a controller lying on a table is never mistaken
+for one being held.
+
+Joints are **positions**, not rotations against a bind pose. Positions are what a
+visualiser draws and what a retargeter solves against, and they mean the robot needs to
+know nothing about Meta's skeleton -- no bone lengths, no parent table, no handedness
+convention. Rotations are smaller on the wire and better for driving an articulated hand
+model directly; if that is ever wanted, they should be added beside these, not instead.
+
+The joint count travels per hand rather than being fixed, because the SDK ships two hand
+skeletons (24 bones and 26) and hard-coding either breaks when the runtime picks the
+other.
+
+Cost: a controller session is **exactly 158 bytes**, unchanged. A two-hand frame is about
+810. The hand block is appended only when hands are tracked, so nothing is paid for a
+feature that is not in use.
+
+## Watching it in 3D
+
+```bash
+uv sync --extra viz
+uv run mock_robot.py --source webcam --viser        # http://localhost:8080
+```
+
+Draws the head as a frustum -- so which way the operator is facing is obvious at a glance
+-- plus whichever of hands or controllers is live. Pinch strength drives the joint size,
+so a grasp is visible without reading a number. It updates whether or not video is
+streaming, which is when it is most useful: you can check that poses mean what you think
+before anything else works.
+
+**Handedness is converted here, not on the headset.** Unity is left-handed with Y up and
+essentially all robotics is right-handed, so the wire carries exactly what the headset saw
+and each consumer picks its own convention -- ROS wants Z up, this viewer wants Y up, and
+a headset guessing between them would be wrong for somebody. `viz.to_right_handed()` is
+the conversion: positions become `(x, y, -z)` and a rotation `(x, y, z, w)` becomes
+`(-x, -y, z, w)`.
+
 ## Going remote
 
 See [docs/REMOTE.md](../../docs/REMOTE.md). Short version: a remote robot is just an

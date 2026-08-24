@@ -1,0 +1,28 @@
+{
+  "buildFiles": [
+    "/Users/ianc/Documents/GitHub/Guided-Vision-Unity/Guided-Vision/Library/Bee/Android/Prj/IL2CPP/Gradle/unityLibrary/src/main/cpp/CMakeLists.txt",
+    "/Users/ianc/Documents/GitHub/Guided-Vision-Unity/Guided-Vision/Library/Bee/Android/Prj/IL2CPP/Gradle/unityLibrary/src/main/cpp/FramePacing/CMakeLists.txt"
+  ],
+  "cleanCommandsComponents": [
+    [
+      "/Applications/Unity/Hub/Editor/6000.5.9f1/PlaybackEngines/AndroidPlayer/SDK/cmake/3.22.1/bin/ninja",
+      "-C",
+      "/Users/ianc/Documents/GitHub/Guided-Vision-Unity/Guided-Vision/.utmp/RelWithDebInfo/n2p34581/arm64-v8a",
+      "clean"
+    ]
+  ],
+  "buildTargetsCommandComponents": [
+    "/Applications/Unity/Hub/Editor/6000.5.9f1/PlaybackEngines/AndroidPlayer/SDK/cmake/3.22.1/bin/ninja",
+    "-C",
+    "/Users/ianc/Documents/GitHub/Guided-Vision-Unity/Guided-Vision/.utmp/RelWithDebInfo/n2p34581/arm64-v8a",
+    "{LIST_OF_TARGETS_TO_BUILD}"
+  ],
+  "libraries": {
+    "swappywrapper::@7e25bd1f32ce224db4e9": {
+      "artifactName": "swappywrapper",
+      "abi": "arm64-v8a",
+      "output": "/Users/ianc/Documents/GitHub/Guided-Vision-Unity/Guided-Vision/Library/Bee/Android/Prj/IL2CPP/Gradle/unityLibrary/build/intermediates/cxx/RelWithDebInfo/n2p34581/obj/arm64-v8a/libswappywrapper.so",
+      "runtimeFiles": []
+    }
+  }
+}

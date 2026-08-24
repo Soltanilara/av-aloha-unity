@@ -11,6 +11,12 @@ dependencies = [
     "msgpack>=1.0",
 ]
 
+[project.optional-dependencies]
+# Visualisation only. Kept out of the default set because a robot does not need a web
+# viewer in order to stream, and this pulls in a websocket and asset stack that has no
+# business on a machine whose job is encoding frames.  Install with: uv sync --extra viz
+viz = ["viser>=0.2"]
+
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"

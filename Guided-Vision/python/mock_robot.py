@@ -217,6 +217,10 @@ def main() -> int:
                     help="send the plain full-frame canvas (the Quest 2/3 path)")
     ap.add_argument("--auto-gaze", action="store_true",
                     help="sweep the fovea when no real gaze is arriving")
+    ap.add_argument("--viser", action="store_true",
+                    help="serve a live 3D view of the headset, hands and controllers "
+                         "(needs the viz extra: uv sync --extra viz)")
+    ap.add_argument("--viser-port", type=int, default=8080)
     ap.add_argument("--hfov", type=float, default=90.0, metavar="DEG",
                     help="horizontal field of view to advertise when there is no "
                          "calibration file (the mock camera has none)")
@@ -251,10 +255,29 @@ def main() -> int:
     args = ap.parse_args()
 
     src_w, src_h = args.src if isinstance(args.src, tuple) else parse_wh(args.src)
-    layout = AtlasLayout(*(args.canvas if isinstance(args.canvas, tuple)
-                           else parse_wh(args.canvas)),
-                         coarse_scale=args.coarse_scale,
-                         fovea_scale=args.fovea_scale)
+    base_layout = AtlasLayout(*(args.canvas if isinstance(args.canvas, tuple)
+                                else parse_wh(args.canvas)),
+                              coarse_scale=args.coarse_scale,
+                              fovea_scale=args.fovea_scale)
+
+    # Boxed so the send loop and the session handler share one value. The viewer may ask
+    # for a different shape -- it is the end that knows its own decoder and its own link
+    # -- and anything it does not specify keeps the command-line default.
+    layout = [base_layout]
+
+    def layout_for(sess) -> AtlasLayout:
+        if sess is None:
+            return base_layout
+        try:
+            w, h = sess.canvas or (base_layout.canvas_w, base_layout.canvas_h)
+            return AtlasLayout(
+                max(256, min(2048, int(w))), max(256, min(2048, int(h))),
+                coarse_scale=sess.coarse_scale if sess.coarse_scale else base_layout.coarse_scale,
+                fovea_scale=sess.fovea_scale if sess.fovea_scale else base_layout.fovea_scale)
+        except ValueError as e:
+            # A viewer asking for something impossible must not take the robot down.
+            print(f"  ignoring requested stream shape: {e}")
+            return base_layout
 
     cap = None
     if args.source == "webcam":
@@ -277,7 +300,7 @@ def main() -> int:
 
     def build_senders(dest, use_codec):
         return {
-            eye: EyeStreamSender(sock, dest, eye, layout, args.fps, args.bitrate,
+            eye: EyeStreamSender(sock, dest, eye, layout[0], args.fps, args.bitrate,
                                  not args.no_intra_refresh, codec=use_codec,
                                  jpeg_quality=args.jpeg_quality, mtu_payload=mtu)
             for eye in (EYE_LEFT, EYE_RIGHT)
@@ -295,6 +318,16 @@ def main() -> int:
         if names:
             print(f"  [robot] {hand} button {'+'.join(names)}")
 
+    viz = None
+    if args.viser:
+        try:
+            from gvlink.viz import HeadsetViz
+            viz = HeadsetViz(port=args.viser_port)
+            print(f"  viser: {viz.url}")
+        except ImportError:
+            # Missing an optional dependency must not stop a robot from streaming.
+            print("  viser requested but not installed; run: uv sync --extra viz")
+
     input_rx = InputListener(args.input_port, on_button=on_button)
 
     beacon = None
@@ -302,9 +335,9 @@ def main() -> int:
         payload = build_payload(
             args.name,
             [{"id": "stereo0", "w": src_w, "h": src_h, "fps": args.fps,
-              "canvasW": layout.canvas_w, "canvasH": layout.canvas_h,
+              "canvasW": base_layout.canvas_w, "canvasH": base_layout.canvas_h,
               "codec": args.codec}],
-            ports={"control": DEFAULT_PORTS["control"],
+            ports={"control": args.control_port,
                    "video": args.video_port, "input": args.input_port},
             foveation=not args.no_fovea)
         beacon = Beacon(payload).start()
@@ -317,13 +350,13 @@ def main() -> int:
     else:
         print(f"control channel on :{args.control_port} (the headset connects here), "
               f"gaze uplink on :{args.input_port}")
-    print(f"  {bandwidth_note(src_w, src_h, layout)}")
+    print(f"  {bandwidth_note(src_w, src_h, base_layout)}")
     print(f"  {args.fps} fps, {args.bitrate} kbps/eye, codec={CODEC_NAMES[codec]}, "
           f"fovea={'off' if args.no_fovea else 'on'}, "
           f"intra-refresh={'off' if args.no_intra_refresh else 'on'}")
 
     period = 1.0 / args.fps
-    active = None            # (addr, codec) the senders are currently built for
+    active = None            # (session id, addr, codec, shape) the senders are built for
     stream_started = None    # when the current viewer appeared; idle time is not fps
     want_fovea = not args.no_fovea
     idle_notice = 0.0
@@ -379,9 +412,19 @@ def main() -> int:
             if now - next_at > 0.5:       # fell far behind; resynchronise
                 next_at = now + period
 
+            # Before the "is anyone watching" check, deliberately: the headset's input
+            # arrives whether or not video is flowing, and being able to watch poses
+            # while nothing is streaming is exactly when this is most useful. Drawn from
+            # the freshest sample on the main loop rather than from the receive thread --
+            # a browser cannot keep up with 90 Hz, and a visualiser has no business
+            # adding work to the path that reassembles packets.
+            if viz is not None:
+                viz.update(input_rx.fresh())
+
             # Who are we sending to, and in what shape?
             if args.host:
                 dest, req_fovea, req_codec = addr, not args.no_fovea, codec
+                sess_id = 0
             else:
                 sess = link.session
                 if sess is None:
@@ -396,9 +439,21 @@ def main() -> int:
                 dest = (sess.addr, sess.video_port)
                 req_codec = sess.codec
                 req_fovea = sess.foveation and not args.no_fovea
+                sess_id = sess.id
 
-            if active != (dest, req_codec):
-                active = (dest, req_codec)
+            want_layout = layout_for(link.session if not args.host else None)
+            shape = (want_layout.canvas_w, want_layout.canvas_h,
+                     want_layout.coarse_scale, want_layout.fovea_scale)
+            # Keyed on the session id, not only on the settings. A reconnect that lands
+            # between two frames of this loop -- which is what "Reconnect" in the headset
+            # menu produces on a LAN -- never shows up as a None session here, so an
+            # identical address and codec looked like nothing had happened at all. The
+            # encoders were left running mid-GOP while the headset's freshly built
+            # decoder waited for a keyframe that was never coming: a reconnect that
+            # reliably ended in a black screen.
+            if active != (sess_id, dest, req_codec, shape):
+                active = (sess_id, dest, req_codec, shape)
+                layout[0] = want_layout
                 stream_started = now
                 # Defer the first rate report a full interval; measuring a frame rate
                 # over the microsecond since streaming began yields a nine-digit number.
@@ -414,7 +469,10 @@ def main() -> int:
                 want_fovea = req_fovea
                 print(f"streaming to {dest[0]}:{dest[1]} "
                       f"codec={CODEC_NAMES[req_codec]} "
-                      f"fovea={'on' if req_fovea else 'off'}")
+                      f"fovea={'on' if req_fovea else 'off'} "
+                      f"canvas={want_layout.canvas_w}x{want_layout.canvas_h} "
+                      f"coarse={want_layout.coarse_scale:.2f} "
+                      f"fovea_scale={want_layout.fovea_scale:.2f}")
             want_fovea = req_fovea
 
             if cap is not None:
@@ -476,6 +534,8 @@ def main() -> int:
             beacon.stop()
         link.stop()
         input_rx.stop()
+        if viz is not None:
+            viz.stop()
         if cap is not None:
             cap.release()
         cv2.destroyAllWindows()

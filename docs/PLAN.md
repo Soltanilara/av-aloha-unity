@@ -541,6 +541,185 @@ the robot learns the address from the socket and stops when it closes, with no k
 or staleness window to tune -- so `GvHello.cs` and `gvlink/hello.py` are gone rather than
 left as a second way to do the same thing.
 
+**The in-session menu draws over the video, and says so (2026-08-23).** The menu opened
+correctly the whole time it appeared broken. Both it and the video quad are world-space
+canvases in the transparent queue with `ZWrite Off` and sorting order 0, so they resolved
+back-to-front by distance -- and the menu's default 1.1 m put it *behind* a video plane at
+1.0 m that covers the entire field of view. It was painted over on every frame it was
+open. The fix is two-part on purpose: an explicit sorting order settles the draw order,
+and the placement is clamped to sit in front of the video plane so the geometry agrees
+with it. Occlusion saying "in front" while vergence says "behind" is a headache in a
+headset, not a rendering detail. The pointer's beam material moved past the transparent
+queue for the same reason.
+
+**Every hold gesture shows its progress (2026-08-23).** A half-second hold with no
+feedback is indistinguishable from an input that is not being read, which is exactly how
+the invisible menu presented -- as a dead B button. A progress pill now appears 0.12 s
+into any summon hold, so "being seen" and "being ignored" can never look alike again.
+
+**Middle-finger pinch summons the menu in hand mode (2026-08-23).** Index pinch is the
+universal click -- this menu's own laser fires on it -- and it is the obvious thing to map
+a gripper to, so it cannot also mean "menu". A middle-finger pinch is a motion nobody
+makes while manipulating, which is the entire requirement for a gesture that must never
+fire by accident mid-task. Held rather than tapped, like the button paths. It reads the
+uplink's existing hand tracker rather than scanning for `OVRHand` a second time.
+
+**A reconnect is identified, not inferred (2026-08-23).** The robot decided whether a
+new viewer had appeared by comparing `(address, codec, stream shape)` against the last
+frame's. That is a fingerprint, not an identity: the headset menu's Reconnect redials
+with *identical* settings, and on a LAN both the drop and the redial land inside a single
+frame of the send loop, so the robot never observed a `None` session either. A reconnect
+looked exactly like nothing having happened -- the encoders kept running mid-GOP while
+the headset's freshly built decoder waited for a keyframe that was never coming. Every
+`Session` now carries a monotonic id and the send loop keys on it, so two sessions with
+identical settings are still two sessions. The selftest reproduces the collision directly:
+it asserts the old key *is* byte-identical across a reconnect, which is the bug, and that
+the new one is not.
+
+**Subscriptions outlive a reconnect (2026-08-23).** `GvRobotLink.Disconnect` cleared the
+subscription table with a comment claiming they were re-registered on the next Connect.
+Nothing re-registered them -- consumers subscribe once, in Start. After a single Reconnect
+the display never heard `camera/params` again, silently, for the rest of the session.
+Pending calls are genuinely dead on disconnect and are still dropped; registrations are
+not, and now survive.
+
+**Menus are sized to their content (2026-08-23).** The session menu's nine rows were laid
+out inside a fixed 470 px panel with room for six, so Disconnect rendered past the bottom
+edge. That is not a cosmetic overflow: the pointer only accepts hits inside the list
+viewport, so the row was reachable by thumbstick and by nothing else -- the same failure
+the start menu had, arrived at a second time by hard-coding a height instead. The panel is
+now grown from the rows that were actually built, which makes visible-and-hittable a
+property of construction rather than of arithmetic somebody has to redo per row added.
+
+**The highest refresh rate is not automatically the right one (2026-08-23).** Display
+frequency was set to the maximum on offer, on the reasoning that each display frame is a
+hard floor on end-to-end latency. True, and incomplete: a Quest 2 offers 120 Hz, and a
+frame the app fails to deliver is reprojected by the compositor. Reprojection is felt
+rather than measured, and it is felt worst on whatever the eyes are tracking -- which is
+why it surfaces as "my own hands look wrong" long before it surfaces as a number. A made
+frame at 72 Hz beats a missed one at 120. There is now a ceiling (90 by default) and an
+in-session row to step through the offered rates, because which one is right depends on
+the scene's cost and is a judgement the operator's eyes make faster than a profiler.
+
+**The frame meter reports a distribution, not an average (2026-08-23).** The HUD reported
+`1 / Time.unscaledDeltaTime` sampled twice a second -- one frame's duration, which reads
+perfectly healthy through a session dropping one frame in three. Judder is a tail, so the
+meter now keeps the worst frame in each interval and counts the ones that overran the
+display period. This is the measurement that separates the two failure modes that feel
+similar and have nothing in common: a stereo geometry fault looks wrong while standing
+still, missed frames look fine until you move.
+
+**Eye selection belongs in the shader, not in camera culling (2026-08-23).** The teleop
+scene ran the legacy per-eye camera rig -- CenterEyeAnchor disabled, LeftEyeAnchor and
+RightEyeAnchor enabled with `stereoTargetEye` Left and Right -- inherited from the WebRTC
+scene. The Android build is **Single Pass Instanced**, where that configuration is not
+supported: one pass fills a two-slice array, and a camera claiming a single eye has no
+well-defined meaning in it. Per-eye imagery was therefore never actually per-eye on
+device, and unfusable or monoscopic imagery is exactly what "my hands feel wrong to look
+at" describes. The fix is one camera plus an `_EyeIndex` test against
+`unity_StereoEyeIndex` in the fragment shader we already own. Deliberately shader-side
+rather than a second camera: the eye index is set correctly under MultiPass *and* single
+pass, so the stereo mode goes back to being a project setting instead of something
+correctness depends on. `isolateEyeLayers` is retired to a legacy flag, off by default.
+
+**`Camera.main` is not the head (2026-08-23).** OVRCameraRig tags **both** CenterEyeAnchor
+and LeftEyeAnchor as MainCamera, and `Camera.main` returns only *enabled* cameras -- so in
+the two-camera scene it silently resolved to the **left eye**. Everything placed "in front
+of the head" sat half an IPD off to one side and every head-relative ray started from the
+wrong origin. It looks almost right, which is why it survived review in four separate
+files. There is now one `GvXr.Head()` that asks the rig for its centre-eye anchor.
+
+*(Superseded: an earlier note here read the Editor's no-HMD `XRSettings.stereoRenderingMode`
+as the project setting and concluded the build was MultiPass. It was not. The Editor value
+answers a different question than the per-build-target OpenXR setting does.)*
+
+
+**Clip planes are an app-wide setting, not a per-scene accident (2026-08-23).** Hands and
+controllers are rendered meshes, so the camera's near plane decides how close to your face
+they can get before they vanish. The rig ships 0.1 m; the teleop scene happened to carry a
+0.07 override on its per-eye cameras and the start scene carried none, so the same app
+clipped at two different distances for no reason anyone chose -- and switching the teleop
+scene to the centre camera would have silently inherited the worse one. Now set in code,
+0.03/100, for every camera in both scenes. Nothing here needs depth precision: the video
+quad does not even write depth.
+
+**The headset becomes a peripheral (2026-08-23).** Planned in `docs/HEADSET_API.md`.
+Teleoperation policy belongs on the robot, in Python, where it changes in a minute; the
+headset should report what the operator is doing and render what the robot asks for. The
+governing rule is that the robot owns *meaning* and the headset owns *presentation and
+safety* -- the robot says "the left wrist should be here", not "draw a red cylinder", so the
+headset can pick a controller ghost or a hand ghost from whatever is actually being tracked
+and get it right on the frame the operator swaps. A generic marker layer sits underneath for
+everything a fixed vocabulary will not cover. The lever that makes "never touch the Unity
+app again" true is `ui/menu`: robot-declared rows in the session menu, which turns episode
+recording, calibration and mode switching into Python.
+
+**Hands and controllers are alternatives, not additions (2026-08-23).** The runtime hands
+you one or the other, so both travel in the same packet and only the live one is marked
+valid. When hands are tracked the controller poses go out invalid rather than stale --
+otherwise a robot mapping a wrist to an end effector would track a controller lying on a
+table. `source` is reported explicitly ("hands" / "controllers" / "none") rather than left
+to be inferred from empty poses, because the frame where the operator sets a controller
+down is exactly where inference goes wrong.
+
+Joints are sent as **positions**, not rotations against a bind pose. Positions are what a
+visualiser draws and what a retargeter solves against, and they mean the robot needs to
+know nothing about Meta's skeleton -- no bone lengths, no parent table, no handedness
+convention. Rotations would be smaller on the wire and are the better choice for driving
+an articulated hand model directly; if that is ever wanted they belong beside these, not
+instead of them. The joint count travels per hand because the SDK ships two hand
+skeletons, 24 bones and 26, and hard-coding either breaks the moment the runtime picks
+the other.
+
+The block is appended only when hands are tracked, so a controller session is still
+exactly 158 bytes and pays nothing for a feature it is not using. Version moved to 3: the
+fixed head is byte-identical, but a v2 reader would take the hand block for msgpack and
+produce garbage, so old readers must reject rather than misread. Order on the wire is
+fixed part, then hands, then msgpack -- the hand block is self-describing and can be
+skipped exactly, msgpack cannot, so it has to be last.
+
+**Handedness is converted at the consumer (2026-08-23).** Unity is left-handed with Y up;
+essentially all robotics is right-handed. The wire carries exactly what the headset saw
+and `viz.to_right_handed` converts, rather than the headset flipping before sending. ROS
+wants Z up, the viewer wants Y up, and a headset guessing between them would be wrong for
+somebody -- so the convention is chosen where the frame is actually used.
+
+**A test that drew nothing (2026-08-23).** The visualiser reported `source == "none"` for
+packets that plainly had hands. `hands_valid` read the `INPUT_HAS_HANDS` flag, which is
+written during `pack` -- so a packet built in memory had hand data and a zero flag, and
+the property called it a controller session. The hand drawing path had never executed.
+It now checks the objects as well as the flag. Worth recording because the failure was
+silent in exactly the way a visual tool cannot afford: it rendered a perfectly plausible
+empty scene.
+
+**The menu was under the floor (2026-08-23).** First on-device run: the start menu was
+invisible in the headset but visible with it off. It was placed once in `Start()`, using
+`Camera.main.transform` -- but at `Start()` the XR runtime has not written a head pose
+yet, so the camera still sits where the rig was authored. With the default `FloorLevel`
+tracking origin that is the floor, while the wearer's eyes end up around 1.6 m up. The
+panel was therefore about 1.6 m below eye level at 1.6 m range: **45 degrees straight
+down**, which reads as the UI not existing. Holding the headset in your hands puts the
+tracked head low, which is why it appeared then.
+
+Placement now waits for a pose that has actually moved, with a 0.5 s timeout because in
+the Editor the camera legitimately sits at the origin forever and waiting for a pose that
+will never arrive would mean no menu at all.
+
+Added with it: the panel comes back if it sits more than 42 degrees outside the view for
+0.9 s, and clicking either thumbstick recentres it. A world-locked panel is trivially
+lost -- turn around, or start facing a wall, and it is behind you with nothing to say
+which way. The delay matters as much as the angle: recentring the instant it leaves view
+would drag the panel along with every glance, which is worse than losing it.
+
+**Foveation needs an eye to follow (2026-08-23).** The session handshake now asks for a
+plain stream on any headset without eye tracking, rather than trusting the profile's
+preference. Without gaze the crop can only sit in the middle of the frame, so the whole
+mechanism -- sharp patch, soft blend, low-detail surround -- is spent making the centre
+sharp and everything else worse than it needed to be. A Quest 2 is strictly better off
+with a plain stream. The settings row stays visible and says "needs eye tracking", since
+hiding it leaves someone hunting for a feature they read about. The eye-tracking
+permission is no longer requested on hardware that cannot satisfy it.
+
 **The robot describes its own cameras (2026-08-22).** The viewer used to be told the
 field of view by a slider the operator set by eye -- a guess made from inside a headset,
 where there is nothing to compare it against. The robot now publishes the rectified

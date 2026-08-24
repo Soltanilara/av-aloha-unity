@@ -36,6 +36,17 @@ Shader "GuidedVision/StereoEyeView"
         _OuterMask ("Outer edge mask", Range(0, 0.5)) = 0.0
         _OuterSign ("Outer side: -1 left eye, +1 right eye", Float) = -1
 
+        // Which eye this quad belongs to: 0 left, 1 right, -1 both.
+        //
+        // Eye selection lives in the shader rather than in camera culling masks
+        // because that is the only form of it that works in BOTH stereo modes.
+        // Culling masks need one camera per eye, which needs MultiPass, which costs
+        // a full extra render pass on a device that has none to spare. Testing
+        // unity_StereoEyeIndex is correct under MultiPass too -- the eye index is set
+        // per pass there -- so the single-pass switch becomes a project setting
+        // rather than a rewrite.
+        _EyeIndex ("Eye: 0 left, 1 right, -1 both", Float) = -1
+
         // Foveal atlas (docs/PLAN.md section 5). All default to the inert values, so
         // a caller that never sets them gets exactly the pre-foveation behaviour.
         _Foveated ("Atlas carries a foveal band", Float) = 0
@@ -120,6 +131,7 @@ Shader "GuidedVision/StereoEyeView"
             sampler2D _MainTex;
             fixed4 _Color;
 
+            float _EyeIndex;
             float _EdgeFeather;
             float _OuterMask;
             float _OuterSign;
@@ -311,6 +323,16 @@ Shader "GuidedVision/StereoEyeView"
 
             fixed4 frag(v2f i) : SV_Target
             {
+                // Required before unity_StereoEyeIndex can be read in the fragment
+                // stage under single-pass instanced. Harmless under MultiPass.
+                UNITY_SETUP_STEREO_EYE_INDEX_POST_VERTEX(i);
+
+                // Drop this quad for the eye it does not belong to. Without it each
+                // eye also sees the other's image, offset by the IPD -- which is not
+                // a subtle artefact but two unfusable pictures at once.
+                if (_EyeIndex >= 0.0 && abs(_EyeIndex - (float)unity_StereoEyeIndex) > 0.5)
+                    discard;
+
                 float2 src = SourceUV(i.texcoord);
 
                 // Directions the camera never saw are transparent, not smeared

@@ -31,7 +31,16 @@ public class GvStartMenu : MonoBehaviour
 
     [Header("Placement")]
     public float menuDistance = 1.6f;
+
+    [Tooltip("Metres below eye level. The menu is placed relative to where you are " +
+             "actually looking, so this is an offset from the eye, not from the floor.")]
     public float menuHeightOffset = -0.1f;
+
+    [Tooltip("Bring the menu back in front of you when it has been this far outside " +
+             "your view for a moment. Without it, a menu placed before tracking settles " +
+             "-- or left behind when you turn around -- is simply lost.")]
+    public float recenterAngle = 42f;
+    public float recenterDelay = 0.9f;
 
     [Header("Discovery")]
     public int beaconPort = 15550;
@@ -73,7 +82,7 @@ public class GvStartMenu : MonoBehaviour
     private TextMeshProUGUI hintText;
 
     private readonly List<GvMenuItem> items = new List<GvMenuItem>();
-    private readonly Nav nav = new Nav();
+    private readonly GvNav nav = new GvNav();
 
     private GvPointer pointer;
     private int hoverRow = -1;
@@ -82,6 +91,11 @@ public class GvStartMenu : MonoBehaviour
     private bool hoverBack;
     private string pageHint = "";
     private Vector2 lastPointerLocal;
+
+    private bool placed;
+    private float outOfViewFor;
+    private float waitingForPose;
+    private const float PoseTimeout = 0.5f;
 
     private Page page = Page.Robots;
     private int selected;
@@ -97,7 +111,7 @@ public class GvStartMenu : MonoBehaviour
         discovery = new GvDiscovery();
         discovery.Start(beaconPort);
 
-        head = Camera.main != null ? Camera.main.transform : null;
+        head = GvXr.Head();
         if (showPassthrough)
             GvPassthroughBackdrop.Ensure(gameObject);
         if (hideExistingCanvases)
@@ -136,7 +150,11 @@ public class GvStartMenu : MonoBehaviour
     private void BuildChrome()
     {
         canvas = GvMenuUi.CreateCanvas(transform, "GvStartMenu", new Vector2(900f, 720f));
-        GvMenuUi.PlaceInFront(canvas.transform, head, menuDistance, menuHeightOffset);
+        // Deliberately NOT placed here. At Start the XR runtime has not yet written a
+        // head pose, so the camera still sits wherever the rig was authored -- and with
+        // a floor-level tracking origin that is the floor, not eye height. Placing now
+        // puts the menu about 1.7 m below where the wearer's eyes end up, which reads as
+        // the UI simply not existing. Place on the first frame with a real pose instead.
 
         GvMenuUi.Panel(canvas.transform, GvMenuUi.Background);
 
@@ -320,11 +338,60 @@ public class GvStartMenu : MonoBehaviour
         AddFloat(p, "Edge feather", () => p.edgeFeather, v => p.edgeFeather = v, 0.01f, 0f, 0.5f, "{0:0.00}");
         AddFloat(p, "Outer edge mask", () => p.outerEdgeMask, v => p.outerEdgeMask = v, 0.01f, 0f, 0.5f, "{0:0.00}");
         AddFloat(p, "Foveal blend", () => p.foveaFeather, v => p.foveaFeather = v, 0.01f, 0.01f, 0.5f, "{0:0.00}");
+        items.Add(new GvMenuItem { Label = "Stream", IsHeader = true });
+        items.Add(new GvMenuItem
+        {
+            Label = "Video resolution",
+            Value = () => string.Format("{0}x{1}", p.canvasWidth, p.canvasHeight),
+            // Stepped through fixed sizes rather than nudged: this one configures the
+            // hardware decoder at session start, so arbitrary values buy nothing and
+            // odd sizes are exactly what decoders are fussy about.
+            Adjust = dir => CycleCanvas(p, dir),
+            Activate = () => CycleCanvas(p, 1),
+        });
+        AddFloat(p, "Peripheral detail", () => p.coarseScale, v => p.coarseScale = v,
+                 0.05f, 0.15f, 1f, "{0:0.00}");
+        AddFloat(p, "Sharp patch size", () => p.foveaScale, v => p.foveaScale = v,
+                 0.05f, 0.25f, 1f, "{0:0.00}");
+
         AddFloat(p, "HUD distance", () => p.hudDistance, v => p.hudDistance = v, 0.1f, 0.5f, 10f, "{0:0.0} m");
 
-        AddToggle(p, "Foveated streaming", () => p.foveation, v => p.foveation = v);
+        // Shown either way, but honest about it: hiding a setting the hardware cannot
+        // do leaves someone hunting for a feature they read about.
+        if (GvXr.EyeTrackingAvailable)
+        {
+            AddToggle(p, "Foveated streaming", () => p.foveation, v => p.foveation = v);
+        }
+        else
+        {
+            items.Add(new GvMenuItem
+            {
+                Label = "Foveated streaming",
+                Value = () => "needs eye tracking",
+                Enabled = () => false,
+                Activate = () => { },
+            });
+        }
         AddToggle(p, "Outline the sharp patch", () => p.foveaOutline, v => p.foveaOutline = v);
         AddToggle(p, "Software decode (bring-up)", () => p.softwareVideo, v => p.softwareVideo = v);
+    }
+
+    private static readonly int[] CanvasSizes = { 512, 640, 768, 896, 1024, 1280 };
+
+    /// <summary>
+    /// Step the transmitted canvas through sizes a hardware decoder is happy with.
+    ///
+    /// Bigger is more detail and more bandwidth, and costs encode and decode time on
+    /// both ends -- most of a canvas is the two layers, so this is the one control that
+    /// moves everything at once.
+    /// </summary>
+    private static void CycleCanvas(GvRobotProfile p, int dir)
+    {
+        int at = System.Array.IndexOf(CanvasSizes, p.canvasWidth);
+        if (at < 0)
+            at = System.Array.IndexOf(CanvasSizes, 1024);
+        at = Mathf.Clamp(at + (dir >= 0 ? 1 : -1), 0, CanvasSizes.Length - 1);
+        p.canvasWidth = p.canvasHeight = CanvasSizes[at];
     }
 
     private void AddToggle(GvRobotProfile profile, string label,
@@ -441,6 +508,7 @@ public class GvStartMenu : MonoBehaviour
 
     private void Update()
     {
+        KeepInView();
         nav.Poll();
         UpdatePointer();
 
@@ -449,6 +517,8 @@ public class GvStartMenu : MonoBehaviour
         if (nav.Any)
             pointerEngaged = false;
 
+        if (nav.Recenter)
+            Recenter();
         if (nav.Back)
         {
             if (page != Page.Robots)
@@ -489,6 +559,65 @@ public class GvStartMenu : MonoBehaviour
     }
 
     /// <summary>
+    /// Put the menu where the wearer is looking, and keep it findable.
+    ///
+    /// Two problems, one answer. The first frame's head pose is not real -- the runtime
+    /// has not written one yet -- so the initial placement waits for a pose that has
+    /// actually moved. The second is that a world-locked panel is easy to lose: turn
+    /// around, or start the app facing a wall, and it is behind you with no way to know
+    /// which way. So if it sits well outside the view for a moment, it comes back.
+    ///
+    /// The delay matters. Re-centring the instant it leaves the view would drag the
+    /// panel along with every glance, which is far more unpleasant than losing it.
+    /// </summary>
+    private void KeepInView()
+    {
+        if (head == null)
+        {
+            head = GvXr.Head();
+            if (head == null)
+                return;
+        }
+        if (pointer != null && pointer.head == null)
+            pointer.head = head;
+
+        if (!placed)
+        {
+            // A pose of exactly zero means the runtime has not written one yet. Waiting
+            // for any non-trivial pose costs a frame or two and is the difference
+            // between the menu appearing in front of you and appearing under the floor.
+            //
+            // The timeout is not belt-and-braces: in the Editor with no headset the
+            // camera legitimately sits at the origin and never moves, so waiting for a
+            // pose that will never arrive would mean no menu at all.
+            waitingForPose += Time.unscaledDeltaTime;
+            bool posed = head.position != Vector3.zero || head.rotation != Quaternion.identity;
+            if (!posed && waitingForPose < PoseTimeout)
+                return;
+            Recenter();
+            return;
+        }
+
+        Vector3 toMenu = canvas.transform.position - head.position;
+        if (toMenu.sqrMagnitude < 1e-4f)
+            return;
+        float angle = Vector3.Angle(head.forward, toMenu);
+        outOfViewFor = angle > recenterAngle ? outOfViewFor + Time.unscaledDeltaTime : 0f;
+        if (outOfViewFor >= recenterDelay)
+            Recenter();
+    }
+
+    /// <summary>Bring the panel back in front of the wearer, level with the horizon.</summary>
+    public void Recenter()
+    {
+        if (head == null || canvas == null)
+            return;
+        GvMenuUi.PlaceInFront(canvas.transform, head, menuDistance, menuHeightOffset);
+        placed = true;
+        outOfViewFor = 0f;
+    }
+
+    /// <summary>
     /// Intersect the pointer with the menu panel and work out what it is over.
     ///
     /// Done against the known row rects rather than through Unity's GraphicRaycaster:
@@ -503,19 +632,10 @@ public class GvStartMenu : MonoBehaviour
         if (pointer == null || canvas == null || !pointer.Active)
             return;
 
-        var ct = (RectTransform)canvas.transform;
-        var plane = new Plane(ct.forward, ct.position);
-        float dist;
-        if (!plane.Raycast(pointer.Aim, out dist))
-        {
-            pointer.SetHit(false, Vector3.zero);
-            return;
-        }
-
-        Vector3 world = pointer.Aim.GetPoint(dist);
-        Vector3 lp = ct.InverseTransformPoint(world);
-        var local = new Vector2(lp.x, lp.y);
-        bool inPanel = ct.rect.Contains(local);
+        Vector3 world;
+        Vector2 local;
+        bool inPanel = GvMenuUi.RayHit((RectTransform)canvas.transform, pointer.Aim,
+                                       out world, out local);
         pointer.SetHit(inPanel, world);
         if (!inPanel)
             return;
@@ -525,7 +645,7 @@ public class GvStartMenu : MonoBehaviour
             pointerEngaged = true;
         lastPointerLocal = local;
 
-        if (page != Page.Robots && Contains(backButton, world))
+        if (page != Page.Robots && GvMenuUi.Contains(backButton, world))
         {
             hoverBack = true;
             return;
@@ -534,7 +654,7 @@ public class GvStartMenu : MonoBehaviour
         // Rows are clipped to the list viewport, so a row scrolled up under the header
         // is still geometrically inside the panel. Require the hit to be in the viewport
         // too, or you can click something you cannot see.
-        if (!Contains(listRoot, world))
+        if (!GvMenuUi.Contains(listRoot, world))
             return;
 
         for (int i = 0; i < items.Count; i++)
@@ -542,13 +662,13 @@ public class GvStartMenu : MonoBehaviour
             var it = items[i];
             if (it.Row == null || !Selectable(i))
                 continue;
-            if (!Contains(it.Row, world))
+            if (!GvMenuUi.Contains(it.Row, world))
                 continue;
             hoverRow = i;
             if (it.Adjust != null)
             {
-                if (Contains(it.Minus, world)) hoverStep = -1;
-                else if (Contains(it.Plus, world)) hoverStep = 1;
+                if (GvMenuUi.Contains(it.Minus, world)) hoverStep = -1;
+                else if (GvMenuUi.Contains(it.Plus, world)) hoverStep = 1;
             }
             if (pointerEngaged)
                 selected = i;
@@ -602,15 +722,7 @@ public class GvStartMenu : MonoBehaviour
                 case "mouse": return "Point and click";
             }
         }
-        return "Stick / arrows to move   *   A / Enter to select";
-    }
-
-    private static bool Contains(RectTransform rt, Vector3 world)
-    {
-        if (rt == null)
-            return false;
-        Vector3 lp = rt.InverseTransformPoint(world);
-        return rt.rect.Contains(new Vector2(lp.x, lp.y));
+        return "Stick / arrows to move   *   A / Enter to select   *   click a stick to recentre";
     }
 
     private GvMenuItem Current() =>
@@ -706,88 +818,6 @@ public class GvStartMenu : MonoBehaviour
         else
         {
             statusText.text = config.lastRobot ?? "";
-        }
-    }
-
-    /// <summary>
-    /// Stick-or-keyboard navigation with auto-repeat.
-    ///
-    /// The stick is treated as a d-pad: an analogue axis feeding a list produces either
-    /// a runaway scroll or a dead zone nobody can tune, so it is quantised and repeated
-    /// on a timer instead.
-    /// </summary>
-    private sealed class Nav
-    {
-        private const float Deadzone = 0.55f;
-        private const float FirstRepeat = 0.42f;
-        private const float NextRepeat = 0.13f;
-
-        public bool Up, Down, Left, Right, Select, Back;
-
-        /// <summary>Any stick or key input this frame -- used to hand the selection
-        /// back from the pointer to the stick.</summary>
-        public bool Any => Up || Down || Left || Right || Select || Back;
-
-        private Vector2 held;
-        private float repeatAt;
-
-        public void Poll()
-        {
-            Up = Down = Left = Right = Select = Back = false;
-
-            Vector2 axis = Vector2.zero;
-            try
-            {
-                axis = OVRInput.Get(OVRInput.Axis2D.PrimaryThumbstick)
-                     + OVRInput.Get(OVRInput.Axis2D.SecondaryThumbstick);
-            }
-            catch (Exception)
-            {
-                // No OVR runtime (plain Editor play mode); keys still work.
-            }
-
-            var dir = new Vector2(
-                Mathf.Abs(axis.x) > Deadzone ? Mathf.Sign(axis.x) : 0f,
-                Mathf.Abs(axis.y) > Deadzone ? Mathf.Sign(axis.y) : 0f);
-            // A diagonal push should not move two ways at once; the larger wins.
-            if (dir.x != 0f && dir.y != 0f)
-            {
-                if (Mathf.Abs(axis.x) >= Mathf.Abs(axis.y)) dir.y = 0f;
-                else dir.x = 0f;
-            }
-
-            bool fresh = dir != held;
-            held = dir;
-            if (fresh)
-                repeatAt = Time.unscaledTime + FirstRepeat;
-
-            bool fire = dir != Vector2.zero && (fresh || Time.unscaledTime >= repeatAt);
-            if (fire && !fresh)
-                repeatAt = Time.unscaledTime + NextRepeat;
-
-            if (fire)
-            {
-                Up = dir.y > 0f;
-                Down = dir.y < 0f;
-                Right = dir.x > 0f;
-                Left = dir.x < 0f;
-            }
-
-            if (Input.GetKeyDown(KeyCode.UpArrow) || Input.GetKeyDown(KeyCode.W)) Up = true;
-            if (Input.GetKeyDown(KeyCode.DownArrow) || Input.GetKeyDown(KeyCode.S)) Down = true;
-            if (Input.GetKeyDown(KeyCode.LeftArrow) || Input.GetKeyDown(KeyCode.A)) Left = true;
-            if (Input.GetKeyDown(KeyCode.RightArrow) || Input.GetKeyDown(KeyCode.D)) Right = true;
-            if (Input.GetKeyDown(KeyCode.Return) || Input.GetKeyDown(KeyCode.Space)) Select = true;
-            if (Input.GetKeyDown(KeyCode.Escape) || Input.GetKeyDown(KeyCode.Backspace)) Back = true;
-
-            try
-            {
-                if (OVRInput.GetDown(OVRInput.Button.One)) Select = true;
-                if (OVRInput.GetDown(OVRInput.Button.Two)) Back = true;
-            }
-            catch (Exception)
-            {
-            }
         }
     }
 }

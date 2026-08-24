@@ -56,6 +56,15 @@ public class GvRobotProfile
     /// </summary>
     public bool softwareVideo = false;
 
+    /// <summary>
+    /// Fraction of the coarse band the periphery fills. Lower is a blurrier surround
+    /// and a more pronounced foveal effect -- and less bandwidth.
+    /// </summary>
+    public float coarseScale = 0.35f;
+
+    /// <summary>Fraction of the fovea band the sharp crop fills.</summary>
+    public float foveaScale = 0.5f;
+
     public GvRobotProfile Clone() => (GvRobotProfile)MemberwiseClone();
 }
 

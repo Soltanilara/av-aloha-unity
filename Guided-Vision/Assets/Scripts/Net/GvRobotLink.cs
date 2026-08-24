@@ -308,6 +308,32 @@ public sealed class GvRobotLink : IDisposable
         }
     }
 
+    /// <summary>
+    /// Drop the connection and stop retrying, leaving the object reusable.
+    ///
+    /// Distinct from Dispose, which is teardown. Ending a session is a thing the
+    /// operator does on purpose and may well undo a second later, so it must not leave
+    /// the link in a state that needs a new object to recover from.
+    /// </summary>
+    public void Disconnect()
+    {
+        Dispose();
+        // Subscriptions deliberately survive. They are registered once, in a consumer's
+        // Start, and nothing re-registers them afterwards -- clearing them here meant
+        // that after one Reconnect the display never heard camera/params again, silently
+        // and for the rest of the session. Pending calls are different: they can never be
+        // answered now, so drop them rather than leaving callbacks that fire against a
+        // session that no longer exists.
+        replies.Clear();
+        errors.Clear();
+        lock (queueLock) inbox.Clear();
+        if (lastReportedConnected)
+        {
+            lastReportedConnected = false;
+            ConnectionChanged?.Invoke(false);
+        }
+    }
+
     public void Dispose()
     {
         running = false;

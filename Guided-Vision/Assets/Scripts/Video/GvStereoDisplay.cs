@@ -102,13 +102,22 @@ public class GvStereoDisplay : MonoBehaviour
              "below native resolution, which visibly softens video.")]
     public bool disableDynamicResolution = true;
 
-    [Tooltip("Request the highest refresh rate the headset supports. Each display " +
-             "frame is a hard floor on end-to-end latency.")]
+    [Tooltip("Request the highest refresh rate the headset supports, up to the ceiling " +
+             "below. Each display frame is a hard floor on end-to-end latency.")]
     public bool useMaxDisplayFrequency = true;
 
-    [Tooltip("Render each eye's quad only to that eye. Requires the " +
-             "LeftEyeOnly/RightEyeOnly layers.")]
-    public bool isolateEyeLayers = true;
+    [Tooltip("Ceiling on the requested refresh rate. Raising the rate only helps if the " +
+             "app can actually hit it: a Quest 2 offers 120 Hz, and an app that misses " +
+             "frames at 120 is reprojected, which reads as judder on anything you track " +
+             "with your eyes -- your own hands most of all. A made frame at 72 beats a " +
+             "missed one at 120. 0 means no ceiling.")]
+    public float maxDisplayFrequency = 90f;
+
+    [Tooltip("Legacy: cull each eye's quad from the other eye's camera. Only does " +
+             "anything with one camera per eye, which needs MultiPass. The shader's " +
+             "_EyeIndex does this job in either stereo mode, so this is off by default " +
+             "and exists only for a scene still running the two-camera rig.")]
+    public bool isolateEyeLayers = false;
 
     public bool showStats = true;
 
@@ -140,6 +149,10 @@ public class GvStereoDisplay : MonoBehaviour
     private RectTransform hudCanvasRect;
     private float hudScalePerMetre;
     private readonly System.Text.StringBuilder stats = new System.Text.StringBuilder(512);
+    private readonly GvFrameStats frameStats = new GvFrameStats();
+    // Refreshed on the stats tick rather than read per frame: it is a plugin call, and
+    // the value changes only when something asks it to.
+    private float cachedHz;
     private float statsTimer;
     private const float StatsInterval = 0.25f;
     private float reportTimer;
@@ -174,7 +187,15 @@ public class GvStereoDisplay : MonoBehaviour
         }
         session = GvRobotSession.Instance;
         uplink = FindAnyObjectByType<GvInputUplink>(FindObjectsInactive.Include);
-        session.Connect(p, codec);
+        // Foveation needs gaze, and gaze needs an eye tracker. On a Quest 2 or 3 the
+        // profile's preference cannot be honoured, and asking for it anyway would spend
+        // the whole mechanism on a crop pinned to the middle of the frame -- a sharp
+        // centre and a worse surround, which is the opposite of the point.
+        bool fovea = p != null && p.foveation && GvXr.EyeTrackingAvailable;
+        if (p != null && p.foveation && !fovea)
+            Debug.Log("GvStereoDisplay: no eye tracking on this headset; "
+                    + "requesting a plain stream.");
+        session.Connect(p, codec, fovea);
         session.Link.ConnectionChanged += OnRobotConnection;
 
         // A worked example of the I/O interface. The mock robot publishes this at
@@ -288,12 +309,10 @@ public class GvStereoDisplay : MonoBehaviour
         left.camera.cullingMask &= ~(1 << rightLayer);
         right.camera.cullingMask &= ~(1 << leftLayer);
 
-        var mode = UnityEngine.XR.XRSettings.stereoRenderingMode;
-        if (mode != UnityEngine.XR.XRSettings.StereoRenderingMode.MultiPass)
-        {
-            Debug.LogWarning($"GvStereoDisplay: stereo rendering mode is {mode}, not MultiPass. " +
-                             "If both eyes show the same image, switch to Multi Pass.");
-        }
+        // No mode check here any more. Layer isolation only works with one camera per
+        // eye, which only MultiPass provides -- but _EyeIndex in the shader does the same
+        // job in either mode, so this is now an optimisation (it skips drawing the other
+        // eye's quad entirely) rather than the thing correctness depends on.
     }
 
     private static void SetLayerRecursively(GameObject go, int layer)
@@ -317,6 +336,11 @@ public class GvStereoDisplay : MonoBehaviour
             if (eye.image == null)
                 continue;
             eye.material = new Material(shader) { name = "StereoEyeView (" + eye.name + ")" };
+            // The quad's own eye, tested per fragment. This is what actually keeps the
+            // left image out of the right eye; the layer/culling-mask route below is a
+            // second belt for the legacy two-camera rig and needs MultiPass to work at
+            // all, which this does not.
+            eye.material.SetFloat("_EyeIndex", eye.index);
             eye.image.material = eye.material;
         }
         PushStaticMaterialParams();
@@ -347,6 +371,19 @@ public class GvStereoDisplay : MonoBehaviour
         QualitySettings.vSyncCount = 0;
         Application.targetFrameRate = -1;
 
+        // The eye buffer starts as opaque black. The video quad covers the view, so a
+        // skybox behind it is pure waste -- and CenterEyeAnchor ships with Skybox set.
+        // GvPassthroughBackdrop overrides this to transparent where the room should
+        // show through; here it must not.
+        foreach (var cam in Camera.allCameras)
+        {
+            if (cam == null)
+                continue;
+            cam.clearFlags = CameraClearFlags.SolidColor;
+            cam.backgroundColor = Color.black;
+        }
+        GvXr.ApplyClipPlanes();
+
         var manager = OVRManager.instance;
         if (manager != null && disableDynamicResolution)
         {
@@ -355,22 +392,70 @@ public class GvStereoDisplay : MonoBehaviour
             manager.maxDynamicResolutionScale = 1.0f;
         }
 
-        if (!useMaxDisplayFrequency)
+        if (useMaxDisplayFrequency)
+            ApplyDisplayFrequency();
+    }
+
+    /// <summary>The refresh rates this headset offers, ascending. Empty off-device.</summary>
+    public float[] AvailableFrequencies
+    {
+        get
+        {
+            try
+            {
+                var a = OVRManager.display?.displayFrequenciesAvailable;
+                if (a == null)
+                    return new float[0];
+                var copy = (float[])a.Clone();
+                System.Array.Sort(copy);
+                return copy;
+            }
+            catch (System.Exception)
+            {
+                return new float[0];
+            }
+        }
+    }
+
+    /// <summary>What the display is running at now, or 0 if it cannot be read.</summary>
+    public float DisplayHz
+    {
+        get
+        {
+            try { return OVRManager.display != null ? OVRManager.display.displayFrequency : 0f; }
+            catch (System.Exception) { return 0f; }
+        }
+    }
+
+    /// <summary>
+    /// Pick the highest offered rate that is not above the ceiling.
+    ///
+    /// Previously this took the highest rate on offer unconditionally. That is the right
+    /// call for latency and the wrong one for comfort the moment the app cannot sustain
+    /// it: the compositor reprojects the frames that do not arrive, and reprojection is
+    /// exactly what makes tracked hands feel wrong to look at.
+    /// </summary>
+    public void ApplyDisplayFrequency()
+    {
+        var available = AvailableFrequencies;
+        if (available.Length == 0)
             return;
+        float ceiling = maxDisplayFrequency > 0f ? maxDisplayFrequency : float.MaxValue;
+        float best = 0f;
+        foreach (float f in available)
+            if (f <= ceiling && f > best) best = f;
+        // Every rate is above the ceiling -- take the lowest rather than leaving it alone.
+        if (best <= 0f)
+            best = available[0];
         try
         {
-            var available = OVRManager.display?.displayFrequenciesAvailable;
-            if (available == null || available.Length == 0)
-                return;
-            float best = 0f;
-            foreach (float f in available)
-                if (f > best) best = f;
-            if (best > 0f)
-                OVRManager.display.displayFrequency = best;
+            OVRManager.display.displayFrequency = best;
+            cachedHz = best;
+            Debug.Log($"GvStereoDisplay: display frequency {best:0} Hz (ceiling {ceiling:0}).");
         }
         catch (System.Exception e)
         {
-            Debug.LogWarning("GvStereoDisplay: could not raise display frequency: " + e.Message);
+            Debug.LogWarning("GvStereoDisplay: could not set display frequency: " + e.Message);
         }
     }
 
@@ -379,7 +464,7 @@ public class GvStereoDisplay : MonoBehaviour
     /// videoVFOV vertically at videoPlaneDistance, which is why moving the plane changes
     /// nothing visible -- the angular image is distance-invariant by construction.
     /// </summary>
-    private void ApplyStereoLayout()
+    public void ApplyStereoLayout()
     {
         float d = Mathf.Max(0.2f, videoPlaneDistance);
         float scale = Mathf.Max(0.05f, videoScale);
@@ -443,7 +528,7 @@ public class GvStereoDisplay : MonoBehaviour
         eye.canvasRect.localPosition = new Vector3(shiftX, shiftY, distance);
     }
 
-    private void ApplyHudDistance()
+    public void ApplyHudDistance()
     {
         if (debugText == null)
             return;
@@ -502,6 +587,11 @@ public class GvStereoDisplay : MonoBehaviour
 
     private void Update()
     {
+        // Sampled unconditionally, not only while the HUD is up: the interesting frames
+        // are the ones during teleoperation, and gating the meter on the readout would
+        // mean only ever measuring the app while it is showing a debug overlay.
+        frameStats.Sample(Time.unscaledDeltaTime, cachedHz);
+
         UpdateEye(left);
         UpdateEye(right);
 
@@ -519,6 +609,41 @@ public class GvStereoDisplay : MonoBehaviour
             return;
         statsTimer = 0f;
         UpdateStats();
+    }
+
+    /// <summary>
+    /// Tear the video path down and bring it back up, keeping the display geometry.
+    ///
+    /// The decoder is configured once per session, so a wedged stream cannot be fixed
+    /// by waiting -- something has to close the socket and start again. Camera params
+    /// are kept: they describe the robot's hardware, not this connection.
+    /// </summary>
+    public void RestartVideo()
+    {
+        Debug.Log("GvStereoDisplay: restarting video.");
+        left.source = null;
+        right.source = null;
+        left.textureBound = false;
+        right.textureBound = false;
+        link?.Dispose();
+        link = null;
+
+        link = new GvVideoLink();
+        if (!link.Start(videoPort, canvasWidth, canvasHeight, softwareVideo))
+        {
+            Debug.LogError("GvStereoDisplay: video restart failed.");
+            return;
+        }
+        left.source = link.Left;
+        right.source = link.Right;
+    }
+
+    /// <summary>Reconnect the control channel and the video together.</summary>
+    public void RestartSession()
+    {
+        RestartVideo();
+        if (session != null && !session.Reconnect())
+            Debug.LogWarning("GvStereoDisplay: nothing to reconnect to.");
     }
 
     private void UpdateEye(Eye eye)
@@ -613,8 +738,13 @@ public class GvStereoDisplay : MonoBehaviour
         lastBytesR = br;
 
         stats.Clear();
-        stats.AppendFormat("{0:0.0} Mbit/s   {1:0.0} fps display{2}\n",
-            mbps, 1f / Mathf.Max(1e-3f, Time.unscaledDeltaTime),
+        frameStats.Flush();
+        cachedHz = DisplayHz;
+        float hz = cachedHz;
+        stats.AppendFormat("{0:0.0} Mbit/s   render {1:0.0} fps / {2:0} Hz   worst {3:0.0} ms   " +
+                           "missed {4}/{5}   {6}{7}\n",
+            mbps, frameStats.Fps, hz, frameStats.WorstMs, frameStats.Missed, frameStats.Frames,
+            UnityEngine.XR.XRSettings.stereoRenderingMode,
             link != null && link.IsSoftwarePath ? "   [mjpeg/software]" : "");
         var rl = session != null ? session.Link : null;
         if (rl != null)

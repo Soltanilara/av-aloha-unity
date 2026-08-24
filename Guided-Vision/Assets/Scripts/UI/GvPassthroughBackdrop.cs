@@ -32,6 +32,11 @@ public class GvPassthroughBackdrop : MonoBehaviour
 
     private void Start()
     {
+        // Same clip planes as the teleop scene. Without this the start scene keeps the
+        // rig's 0.1 m default and a hand brought up to the face disappears -- which is
+        // exactly where a new user brings their hands, since the menu is the first thing
+        // they are asked to point at.
+        GvXr.ApplyClipPlanes();
         if (!TryEnable())
             ApplyClear(fallback);
     }

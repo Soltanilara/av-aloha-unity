@@ -45,7 +45,10 @@ public class GvInputUplink : MonoBehaviour
              "frame it will steer.")]
     public float rateHz = 90f;
 
-    private readonly byte[] packet = new byte[GvInputPacket.Size];
+    // Big enough for the fixed part plus two 26-joint hands, so a hand frame never
+    // allocates on the send path.
+    private readonly byte[] packet = new byte[GvInputPacket.Size + 2 * (GvInputPacket.HandHeadSize + 12 * 32)];
+    private GvHandTracking handTracking;
     private Socket socket;
     private EndPoint target;
     private uint seq;
@@ -58,6 +61,9 @@ public class GvInputUplink : MonoBehaviour
     public long Sent { get; private set; }
     public bool GazeAvailable { get; private set; }
     public bool GazeSimulated { get; private set; }
+
+    /// <summary>True while the runtime is tracking hands rather than controllers.</summary>
+    public bool HandsActive { get; private set; }
 
     /// <summary>Last gaze point sent, in source-image UV. Centre when unavailable.</summary>
     public Vector2 GazeUV { get; private set; } = new Vector2(0.5f, 0.5f);
@@ -81,8 +87,8 @@ public class GvInputUplink : MonoBehaviour
             if (leftController == null) leftController = rig.leftHandAnchor;
             if (rightController == null) rightController = rig.rightHandAnchor;
         }
-        if (head == null && Camera.main != null)
-            head = Camera.main.transform;
+        if (head == null)
+            head = GvXr.Head();
 
         if (leftEyeGaze == null || rightEyeGaze == null)
         {
@@ -95,6 +101,14 @@ public class GvInputUplink : MonoBehaviour
 
         if (display == null)
             display = FindAnyObjectByType<GvStereoDisplay>();
+
+        if (handTracking == null)
+        {
+            handTracking = FindAnyObjectByType<GvHandTracking>(FindObjectsInactive.Include);
+            if (handTracking == null)
+                handTracking = gameObject.AddComponent<GvHandTracking>();
+        }
+        handTracking.SetOrigin(trackingOrigin);
     }
 
     private void Start()
@@ -106,9 +120,14 @@ public class GvInputUplink : MonoBehaviour
         // Eye tracking is permission-gated and the user can refuse. Everything else
         // must keep working when they do -- foveation simply falls back to centre.
 #if UNITY_ANDROID && !UNITY_EDITOR
-        const string EyePermission = "com.oculus.permission.EYE_TRACKING";
-        if (!UnityEngine.Android.Permission.HasUserAuthorizedPermission(EyePermission))
-            UnityEngine.Android.Permission.RequestUserPermission(EyePermission);
+        // Only where there is an eye tracker to ask about. Prompting for a permission
+        // the hardware cannot satisfy is a dialog that can only be answered wrongly.
+        if (GvXr.EyeTrackingAvailable)
+        {
+            const string EyePermission = "com.oculus.permission.EYE_TRACKING";
+            if (!UnityEngine.Android.Permission.HasUserAuthorizedPermission(EyePermission))
+                UnityEngine.Android.Permission.RequestUserPermission(EyePermission);
+        }
 #endif
         // The robot address is deliberately NOT read here. GvRobotSession.Profile is
         // only populated when GvStereoDisplay.Start() calls Connect(), and the order of
@@ -131,14 +150,26 @@ public class GvInputUplink : MonoBehaviour
         GazeAvailable = gazeValid;
         GazeUV = gazeValid ? (gl + gr) * 0.5f : new Vector2(0.5f, 0.5f);
 
-        GvInputPacket.Pack(packet, ++seq, (ulong)(Clock.ElapsedTicks / 10L),
-                           ReadPose(head),
-                           ReadController(leftController, OVRInput.Controller.LTouch),
-                           ReadController(rightController, OVRInput.Controller.RTouch),
-                           gl, gr, confidence, gazeValid);
+        // Hands and controllers are alternatives. When hands are live the controllers
+        // are not being held, so sending their stale poses as valid would have the robot
+        // tracking an object lying on a table.
+        bool hands = handTracking != null && handTracking.AnyTracked;
+        HandsActive = hands;
+
+        var lc = hands ? default(GvControllerState)
+                       : ReadController(leftController, OVRInput.Controller.LTouch);
+        var rc = hands ? default(GvControllerState)
+                       : ReadController(rightController, OVRInput.Controller.RTouch);
+
+        int n = GvInputPacket.Pack(packet, ++seq, (ulong)(Clock.ElapsedTicks / 10L),
+                           ReadPose(head), lc, rc,
+                           gl, gr, confidence, gazeValid,
+                           hands,
+                           hands ? handTracking.Left : default(GvHandState),
+                           hands ? handTracking.Right : default(GvHandState));
         try
         {
-            socket.SendTo(packet, target);
+            socket.SendTo(packet, n, SocketFlags.None, target);
             Sent++;
         }
         catch (Exception)

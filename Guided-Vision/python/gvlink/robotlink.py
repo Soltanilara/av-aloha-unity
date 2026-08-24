@@ -22,6 +22,7 @@ Design notes worth not re-litigating:
 
 from __future__ import annotations
 
+import itertools
 import socket
 import struct
 import threading
@@ -188,12 +189,31 @@ class ControlClient:
 class Session:
     """What the connected viewer asked for."""
 
+    # Every session gets an identity, so "is this the same viewer as last frame" is a
+    # fact rather than an inference from the parameters. Two sessions with identical
+    # settings are still two sessions: the second one has a brand-new decoder that has
+    # never seen a keyframe, and the encoder has to be told.
+    _next_id = itertools.count(1)
+
     def __init__(self, addr: str, data: dict) -> None:
+        self.id = next(Session._next_id)
         self.addr = addr
         self.video_port = int(data.get("video", DEFAULT_PORTS["video"]))
         self.codec = int(data.get("codec", CODEC_H264))
         self.foveation = bool(data.get("fovea", True))
         self.name = str(data.get("name", "headset"))
+
+        # Stream shape, chosen by the viewer because it is the end that knows its own
+        # decoder and its own link. None means "whatever the robot was started with".
+        self.canvas = None
+        if data.get("cw") and data.get("ch"):
+            self.canvas = (int(data["cw"]), int(data["ch"]))
+        self.coarse_scale = float(data["cs"]) if data.get("cs") else None
+        self.fovea_scale = float(data["fs"]) if data.get("fs") else None
+
+    def layout_key(self):
+        """What a change here means a new encoder. Compared, not applied blindly."""
+        return (self.canvas, self.coarse_scale, self.fovea_scale)
 
     def __str__(self) -> str:
         return (f"{self.name} {self.addr}:{self.video_port} "

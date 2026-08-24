@@ -247,13 +247,21 @@ class Reassembler:
 # ---------------------------------------------------------------------- input packet
 
 INPUT_MAGIC = b"GVIN"
-INPUT_VERSION = 2
+
+# 3 adds the optional hand block. The fixed 158-byte head is byte-identical to 2, but a
+# v2 reader would take the hand block for msgpack and produce garbage, so the version
+# moves and old readers reject the packet outright instead of misreading it.
+INPUT_VERSION = 3
 
 INPUT_GAZE_VALID = 1 << 0
 INPUT_HEAD_VALID = 1 << 1
 INPUT_LEFT_VALID = 1 << 2
 INPUT_RIGHT_VALID = 1 << 3
 INPUT_HAS_EXTRAS = 1 << 4
+INPUT_HAS_HANDS = 1 << 5
+
+# Finger order in the pinch array, and the joint order the headset sends.
+FINGERS = ("thumb", "index", "middle", "ring", "pinky")
 
 BUTTON_ONE = 1 << 0          # A / X
 BUTTON_TWO = 1 << 1          # B / Y
@@ -288,6 +296,81 @@ _F_LEFT = 12           # 3 pos + 4 rot + 2 stick + 2 triggers + buttons + pad = 
 _F_RIGHT = _F_LEFT + 13
 _F_GAZE = _F_RIGHT + 13
 assert _F_GAZE == 38, _F_GAZE
+
+
+# --- hands -------------------------------------------------------------------
+#
+# Hand tracking and controllers are alternatives, not additions: the runtime gives you
+# one or the other, so both travel in the same packet and whichever is live is the one
+# marked valid. The hand block is appended only when hands are actually tracked, which
+# keeps a controller session at exactly the 158 bytes it was.
+#
+# Joints are sent as POSITIONS in tracking space rather than as rotations against a
+# bind pose. Positions are what a visualiser draws and what a retargeter solves against,
+# and they mean the robot needs to know nothing about Meta's skeleton -- no bone
+# lengths, no parent table, no handedness convention. Rotations would be smaller on the
+# wire and are the better choice for driving an articulated hand model directly; if that
+# is ever wanted, add them beside these rather than instead of them.
+#
+# The joint count is sent per hand rather than fixed, because the SDK ships more than one
+# hand skeleton (24 bones for the classic one, 26 for the XR one) and hard-coding either
+# would break the moment the runtime picked the other.
+
+_HAND_HEAD = struct.Struct("!BBBB7f5B")   # tracked, conf, joints, pad, wrist pose, pinch
+HAND_HEAD_SIZE = _HAND_HEAD.size
+
+
+@dataclass
+class HandState:
+    """One tracked hand, as the headset saw it."""
+    tracked: bool = False
+    confidence: float = 0.0                     # 0..1
+    wrist_pos: tuple = (0.0, 0.0, 0.0)
+    wrist_rot: tuple = (0.0, 0.0, 0.0, 1.0)
+    pinch: tuple = (0.0, 0.0, 0.0, 0.0, 0.0)    # per FINGERS, 0..1
+    joints: tuple = ()                          # (n, 3) positions in tracking space
+
+    @property
+    def joint_count(self) -> int:
+        return len(self.joints)
+
+    def pinch_of(self, finger: str) -> float:
+        return self.pinch[FINGERS.index(finger)] if finger in FINGERS else 0.0
+
+    def pack(self) -> bytes:
+        n = min(255, len(self.joints))
+        head = _HAND_HEAD.pack(
+            1 if self.tracked else 0,
+            max(0, min(255, int(round(self.confidence * 255)))),
+            n, 0,
+            *self.wrist_pos, *self.wrist_rot,
+            *[max(0, min(255, int(round(v * 255)))) for v in self.pinch],
+        )
+        flat = [c for j in self.joints[:n] for c in j]
+        return head + struct.pack(f"!{3 * n}f", *flat)
+
+    @staticmethod
+    def unpack_from(buf: bytes, off: int):
+        """Returns (HandState, next_offset) or (None, off) if the buffer is short."""
+        if len(buf) < off + HAND_HEAD_SIZE:
+            return None, off
+        f = _HAND_HEAD.unpack_from(buf, off)
+        off += HAND_HEAD_SIZE
+        n = f[2]
+        need = 12 * n
+        if len(buf) < off + need:
+            return None, off
+        joints = ()
+        if n:
+            flat = struct.unpack_from(f"!{3 * n}f", buf, off)
+            joints = tuple(tuple(flat[i:i + 3]) for i in range(0, 3 * n, 3))
+        off += need
+        return HandState(
+            tracked=bool(f[0]), confidence=f[1] / 255.0,
+            wrist_pos=f[4:7], wrist_rot=f[7:11],
+            pinch=tuple(v / 255.0 for v in f[11:16]),
+            joints=joints,
+        ), off
 
 
 @dataclass
@@ -327,6 +410,10 @@ class HeadsetInput:
     gaze_r: tuple = (0.5, 0.5)
     gaze_confidence: float = 0.0
 
+    # Present only when the runtime is tracking hands. None means a controller session.
+    hand_l: HandState = None
+    hand_r: HandState = None
+
     extras: dict = None
 
     def __post_init__(self):
@@ -334,6 +421,34 @@ class HeadsetInput:
             self.left = ControllerState()
         if self.right is None:
             self.right = ControllerState()
+
+    @property
+    def hands_valid(self) -> bool:
+        """
+        Whether this carries hands.
+
+        Checks the objects, not only the flag. The flag is written during `pack`, so a
+        packet built in memory -- by a test, or by a robot synthesising input -- has hand
+        data and a zero flag, and asking the flag would call that a controller session.
+        """
+        return (self.hand_l is not None or self.hand_r is not None
+                or bool(self.flags & INPUT_HAS_HANDS))
+
+    @property
+    def source(self) -> str:
+        """
+        Which of the two the operator is actually using: "hands", "controllers", or
+        "none". The distinction is worth making explicit rather than left to be inferred
+        from empty poses, because a robot that maps a wrist to an end effector needs to
+        know which stream to believe on the frame the operator puts a controller down.
+        """
+        if self.hands_valid and (
+                (self.hand_l is not None and self.hand_l.tracked)
+                or (self.hand_r is not None and self.hand_r.tracked)):
+            return "hands"
+        if self.flags & (INPUT_LEFT_VALID | INPUT_RIGHT_VALID):
+            return "controllers"
+        return "none"
 
     @property
     def gaze_valid(self) -> bool:
@@ -344,6 +459,12 @@ class HeadsetInput:
             return (*c.pos, *c.rot, *c.stick, c.trigger, c.grip, c.buttons & 0xFF, 0)
 
         flags = self.flags
+        hands = b""
+        if self.hand_l is not None or self.hand_r is not None:
+            hands = ((self.hand_l or HandState()).pack()
+                     + (self.hand_r or HandState()).pack())
+            flags |= INPUT_HAS_HANDS
+
         blob = b""
         if self.extras:
             import msgpack
@@ -356,7 +477,7 @@ class HeadsetInput:
             *self.head_pos, *self.head_rot,
             *ctrl(self.left), *ctrl(self.right),
             *self.gaze_l, *self.gaze_r, self.gaze_confidence,
-        ) + blob
+        ) + hands + blob
 
     @classmethod
     def unpack(cls, buf: bytes):
@@ -372,12 +493,24 @@ class HeadsetInput:
                 trigger=f[o + 9], grip=f[o + 10], buttons=f[o + 11])
 
 
-        extras = None
         flags = f[2]
-        if flags & INPUT_HAS_EXTRAS and len(buf) > INPUT_SIZE:
+        off = INPUT_SIZE
+
+        # Order matters: hands first, then msgpack. The hand block is fixed-shape and
+        # self-describing, so it can be skipped exactly; msgpack cannot be, which is why
+        # it has to be last.
+        hand_l = hand_r = None
+        if flags & INPUT_HAS_HANDS:
+            hand_l, off = HandState.unpack_from(buf, off)
+            hand_r, off = HandState.unpack_from(buf, off)
+            if hand_l is None or hand_r is None:
+                return None      # truncated mid-hand: better nothing than half a pose
+
+        extras = None
+        if flags & INPUT_HAS_EXTRAS and len(buf) > off:
             import msgpack
             try:
-                extras = msgpack.unpackb(buf[INPUT_SIZE:], raw=False)
+                extras = msgpack.unpackb(buf[off:], raw=False)
             except Exception:
                 extras = None
 
@@ -387,5 +520,6 @@ class HeadsetInput:
             left=ctrl(_F_LEFT), right=ctrl(_F_RIGHT),
             gaze_l=(f[_F_GAZE], f[_F_GAZE + 1]),
             gaze_r=(f[_F_GAZE + 2], f[_F_GAZE + 3]),
-            gaze_confidence=f[_F_GAZE + 4], extras=extras,
+            gaze_confidence=f[_F_GAZE + 4],
+            hand_l=hand_l, hand_r=hand_r, extras=extras,
         )

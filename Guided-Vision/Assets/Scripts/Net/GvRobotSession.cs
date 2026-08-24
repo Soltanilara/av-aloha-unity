@@ -36,6 +36,9 @@ public class GvRobotSession : MonoBehaviour
 
     public GvRobotLink Link { get; private set; }
     public GvRobotProfile Profile { get; private set; }
+
+    private int lastCodec = -1;
+    private bool lastFoveation;
     public bool Connected => Link != null && Link.Connected;
 
     private void Awake()
@@ -53,7 +56,7 @@ public class GvRobotSession : MonoBehaviour
     /// Connect to the robot in `profile` and tell it where to send video. Safe to call
     /// again with the same profile; the link ignores a second connect.
     /// </summary>
-    public void Connect(GvRobotProfile profile, int codec)
+    public void Connect(GvRobotProfile profile, int codec, bool foveation)
     {
         if (profile == null || string.IsNullOrWhiteSpace(profile.host))
         {
@@ -61,13 +64,51 @@ public class GvRobotSession : MonoBehaviour
             return;
         }
         Profile = profile;
+        lastCodec = codec;
+        lastFoveation = foveation;
         Link.Connect(profile.host, profile.controlPort, new Dictionary<string, object>
         {
             { "video", profile.videoPort },
             { "codec", codec },
-            { "fovea", profile.foveation },
+            { "fovea", foveation },
             { "name", SystemInfo.deviceModel },
+            // The stream's shape is chosen here, not on the robot: this is the end that
+            // knows its own decoder and its own link. The robot clamps and falls back to
+            // its own defaults for anything omitted.
+            { "cw", profile.canvasWidth },
+            { "ch", profile.canvasHeight },
+            { "cs", profile.coarseScale },
+            { "fs", profile.foveaScale },
         });
+    }
+
+    /// <summary>End the session on purpose. The link stays reusable.</summary>
+    public void Disconnect()
+    {
+        if (Link != null)
+            Link.Disconnect();
+        Profile = null;
+        lastCodec = -1;
+        lastFoveation = false;
+    }
+
+    /// <summary>
+    /// Drop and re-establish with the same settings.
+    ///
+    /// Worth having as one operation rather than asking the operator to leave the
+    /// session and come back: a stalled stream is the common case, and the fix should
+    /// not cost them the robot list, the scene load and their place in the menu.
+    /// </summary>
+    public bool Reconnect()
+    {
+        var p = Profile;
+        int codec = lastCodec;
+        bool fovea = lastFoveation;
+        if (p == null || codec < 0)
+            return false;
+        Disconnect();
+        Connect(p, codec, fovea);
+        return true;
     }
 
     private void Update()

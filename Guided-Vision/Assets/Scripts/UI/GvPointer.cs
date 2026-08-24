@@ -83,8 +83,7 @@ public class GvPointer : MonoBehaviour
     {
         rig = FindAnyObjectByType<OVRCameraRig>();
         if (head == null)
-            head = rig != null && rig.centerEyeAnchor != null ? rig.centerEyeAnchor
-                 : (Camera.main != null ? Camera.main.transform : null);
+            head = GvXr.Head();
         BuildVisuals();
     }
 
@@ -95,6 +94,10 @@ public class GvPointer : MonoBehaviour
         var sh = Shader.Find("Sprites/Default") ?? Shader.Find("UI/Default")
               ?? Shader.Find("Unlit/Color");
         lineMaterial = new Material(sh) { hideFlags = HideFlags.HideAndDontSave };
+        // Past the transparent queue, so the beam and reticle draw over the video plane
+        // rather than being sorted behind it. A laser you cannot see while pointing at a
+        // menu floating in front of a video wall is worse than no laser.
+        lineMaterial.renderQueue = 4000;
 
         var go = new GameObject("Beam");
         go.transform.SetParent(transform, false);
@@ -366,6 +369,28 @@ public class GvPointer : MonoBehaviour
         for (int i = 0; i < sources.Count; i++)
             if (sources[i].id == currentId)
                 Pulse(sources[i].haptics, amplitude, seconds);
+    }
+
+    /// <summary>
+    /// Hide the beam when switched off. Update and LateUpdate stop running with the
+    /// component, so without this the last frame's laser would hang in the air pointing
+    /// at a menu that is no longer there.
+    /// </summary>
+    private void OnDisable()
+    {
+        Active = false;
+        ClickDown = ClickUp = ClickHeld = false;
+        wasClicking = false;
+        currentId = -1;
+        if (beam != null)
+            beam.enabled = false;
+        if (reticle != null)
+            reticle.gameObject.SetActive(false);
+        if (hapticOn != OVRInput.Controller.None)
+        {
+            OVRInput.SetControllerVibration(0f, 0f, hapticOn);
+            hapticOn = OVRInput.Controller.None;
+        }
     }
 
     private void OnDestroy()
