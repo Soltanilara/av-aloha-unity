@@ -153,6 +153,7 @@ public class GvStereoDisplay : MonoBehaviour
     // Refreshed on the stats tick rather than read per frame: it is a plugin call, and
     // the value changes only when something asks it to.
     private float cachedHz;
+    private GvSceneCommands sceneCommands;
     private float statsTimer;
     private const float StatsInterval = 0.25f;
     private float reportTimer;
@@ -750,6 +751,13 @@ public class GvStereoDisplay : MonoBehaviour
         if (rl != null)
             stats.AppendFormat("link {0}  in {1} out {2}   {3}\n",
                 rl.Connected ? "up" : "down", rl.MessagesIn, rl.MessagesOut, robotStatus);
+        if (sceneCommands == null)
+            sceneCommands = FindAnyObjectByType<GvSceneCommands>(FindObjectsInactive.Include);
+        if (sceneCommands != null && (sceneCommands.MarkersReceived > 0
+                                      || sceneCommands.GuidesReceived > 0))
+            stats.AppendFormat("ui  markers {0} rcvd / {1} live   guides {2} rcvd\n",
+                sceneCommands.MarkersReceived, sceneCommands.MarkerCount,
+                sceneCommands.GuidesReceived);
         AppendGazeStats();
         AppendEyeStats(left);
         AppendEyeStats(right);

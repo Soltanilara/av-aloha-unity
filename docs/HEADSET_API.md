@@ -1,6 +1,10 @@
 # The headset as a device, not an application
 
-**Status: plan. Nothing here is built yet.**
+**Status: Phase A is built.** `ui/guide`, `ui/marker`, `ui/toast` and `hx` are
+implemented in `GvSceneCommands.cs` / `GvToast.cs` on the headset and `gvlink/ui.py` on
+the robot; `mock_robot.py --ui-demo` exercises them without any robot code. `ui/menu`,
+`ui/overlay`, `ui/hud`, `ui/prompt`, `hs/state`, `hs/event` and the deadman bit are still
+plan only, and are marked below.
 
 The goal is to stop editing the Unity app. Teleoperation policy — what a wrist pose means,
 where the arm should go, when to record — belongs on the robot, in Python, where it can be
@@ -77,10 +81,18 @@ link.publish("ui/guide", {
 })
 ```
 
-The headset draws a translucent ghost of **whatever the operator is currently using** — a
-Touch controller if controllers are live, a hand if hands are — plus a lead line from their
-actual pose to the target, and a fill that closes as they approach. It publishes
-`ui/guide/reached` `{"side":"l","label":"home"}` once satisfied, and buzzes the controller.
+The headset draws a translucent sphere **sized to `tol`** — so the sphere *is* the
+tolerance and touching it is arriving — with an axis gizmo for the orientation, a lead line
+from the operator's actual pose to the target, and a live distance readout. It turns green
+inside tolerance, publishes `ui/guide/reached` `{"side":"l","label":"home","src":"hand"}`
+once held, and buzzes the controller.
+
+It resolves **whatever the operator is currently using** to decide what "left" means and
+what to call it — a tracked hand's wrist if hands are live, the controller anchor otherwise,
+matching the uplink's rule that the two are alternatives rather than additions. The label
+says which. *(A ghost mesh of the actual controller or hand would read better than a sphere
+and is the obvious refinement; the sphere is what is built, and it has the advantage of
+showing the tolerance itself, which a mesh does not.)*
 
 `{"side":"l","clear":true}` removes it.
 
@@ -115,7 +127,7 @@ working guidance. Anything advisory should carry a ttl of a few seconds and be r
 
 `{"clear": "traj"}` removes by id prefix; `{"clear": "*"}` removes everything.
 
-## `ui/overlay` — drawing on the video, not in the room
+## `ui/overlay` — *not built* — drawing on the video, not in the room
 
 Markers live in the room. Detections live in the *image*. Normalised uv on the eye quads,
 so the robot can annotate what its own camera saw without knowing the display geometry:
@@ -130,7 +142,7 @@ link.publish("ui/overlay", {"o": [
 `eye`: `both` (default), `l`, `r`. This is the natural home for detections, grasp
 candidates, a target reticle, or a segmentation outline.
 
-## `ui/hud` — persistent status
+## `ui/hud` — *not built* — persistent status
 
 ```python
 link.publish("ui/hud", {"rows": [["gripper", "0.03 m"], ["mode", "cartesian"]]})
@@ -147,7 +159,7 @@ link.publish("ui/toast", {"txt": "joint 4 near limit", "sev": "warn", "secs": 3}
 
 `sev`: `info` · `warn` · `error`. Errors also buzz.
 
-## `ui/menu` — robot-defined controls
+## `ui/menu` — *not built* — robot-defined controls
 
 **This is the lever that makes "never touch the Unity app again" true.** The robot declares
 rows; they appear in the session menu below the display settings.
@@ -171,7 +183,7 @@ replaced wholesale on each publish, so the robot can enable, disable and relabel
 Episode recording, calibration routines, gripper presets, mode switches and homing all
 become robot-side code the moment this exists. None of them need a Unity change.
 
-## `ui/prompt` — ask the operator a question
+## `ui/prompt` — *not built* — ask the operator a question
 
 A **call**, not a publish, so the robot gets an answer:
 
@@ -199,7 +211,7 @@ Re-origins the view. Bumps `origin_epoch`.
 
 # Headset → robot
 
-## `hs/state` — what the device is doing, ~2 Hz
+## `hs/state` — *not built* — what the device is doing, ~2 Hz
 
 ```python
 {"batt": 0.62, "mounted": True, "src": "hands", "origin_epoch": 3,
@@ -214,7 +226,7 @@ telemetry. The robot should treat it exactly as it treats a deadman release.
 robot log rendering health alongside episodes, which is how you find out afterwards that the
 one bad demonstration was a judder problem and not the policy.
 
-## `hs/event` — discrete things that happened
+## `hs/event` — *not built* — discrete things that happened
 
 Edge-triggered, delivered reliably, unlike the 90 Hz held-state in the uplink:
 
@@ -228,7 +240,7 @@ The last one matters more than it looks. A robot mapping a wrist to an end effec
 know on the *frame* the operator sets a controller down, not to infer it from poses going
 quiet.
 
-## Deadman — a bit in the uplink, deliberately
+## Deadman — *not built* — a bit in the uplink, deliberately
 
 Not a topic. **Bit 6 of the uplink flags** (bits 0–5 are in use), driven by a configurable
 control — grip held, pinch held, or disabled entirely.

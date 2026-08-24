@@ -39,7 +39,7 @@ public class GvHandTracking : MonoBehaviour
 
     private void Scan()
     {
-        hands = FindObjectsByType<OVRHand>(FindObjectsInactive.Include, FindObjectsSortMode.None);
+        hands = FindObjectsByType<OVRHand>(FindObjectsInactive.Include);
         skeletons = new OVRSkeleton[hands.Length];
         for (int i = 0; i < hands.Length; i++)
             skeletons[i] = hands[i] != null ? hands[i].GetComponent<OVRSkeleton>() : null;

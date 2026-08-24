@@ -262,6 +262,15 @@ public class GvSessionMenu : MonoBehaviour
                     Value = () => string.Format("{0:0} Hz", display.DisplayHz),
                     Adjust = CycleFrequency,
                 });
+            var scene = FindAnyObjectByType<GvSceneCommands>(FindObjectsInactive.Include);
+            if (scene != null)
+                items.Add(new GvMenuItem
+                {
+                    Label = "Show controllers / hands",
+                    Value = () => scene.showTrackedHardware ? "on" : "off",
+                    Adjust = _ => scene.showTrackedHardware = !scene.showTrackedHardware,
+                    Activate = () => scene.showTrackedHardware = !scene.showTrackedHardware,
+                });
             items.Add(new GvMenuItem
             {
                 Label = "Outline the sharp patch",

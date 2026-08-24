@@ -199,7 +199,7 @@ public class GvPointer : MonoBehaviour
         {
             nextHandScan = Time.unscaledTime + 2f;
             hands.Clear();
-            hands.AddRange(FindObjectsByType<OVRHand>(FindObjectsInactive.Include, FindObjectsSortMode.None));
+            hands.AddRange(FindObjectsByType<OVRHand>(FindObjectsInactive.Include));
         }
         anyHandLastFrame = false;
         for (int i = 0; i < hands.Count; i++)

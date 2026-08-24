@@ -9,6 +9,7 @@ of which spends latency we cannot afford.
 
 from __future__ import annotations
 
+import threading
 from fractions import Fraction
 
 import numpy as np
@@ -39,6 +40,13 @@ class EyeEncoder:
     def __init__(self, width: int, height: int, fps: int = 60,
                  bitrate_kbps: int = 12000, intra_refresh: bool = True,
                  gop_seconds: float = 2.0, threads: int = 2) -> None:
+        # Encoding and retargeting must not overlap. libx264 keeps an internal frame
+        # pool, and swapping the context out from under an in-flight encode returns
+        # frames to it twice -- which does not raise, it aborts the process on an
+        # assertion or segfaults, several seconds later, wherever the two threads
+        # happened to collide. Callers are still expected to retarget from their own
+        # loop; this is here so that getting that wrong is slow rather than fatal.
+        self._lock = threading.RLock()
         self.width, self.height = width, height
         self._fps = fps
         self._intra_refresh = intra_refresh
@@ -61,13 +69,14 @@ class EyeEncoder:
         this is invisible on the far end beyond one keyframe.
         """
         kbps = max(200, int(bitrate_kbps))
-        if kbps == self.bitrate_kbps:
-            return False
-        self.close()
-        self.bitrate_kbps = kbps
-        self._open()
-        self.rebuilds += 1
-        return True
+        with self._lock:
+            if kbps == self.bitrate_kbps:
+                return False
+            self.close()
+            self.bitrate_kbps = kbps
+            self._open()
+            self.rebuilds += 1
+            return True
 
     def _open(self) -> None:
         av = _load_av()
@@ -123,13 +132,18 @@ class EyeEncoder:
             # Works even with intra-refresh on, which is why keyframe requests from
             # the receiver stay meaningful in both modes.
             frame.pict_type = _PictureType.I
-        return [(bytes(p), bool(p.is_keyframe)) for p in self._cc.encode(frame)]
+        with self._lock:
+            return [(bytes(p), bool(p.is_keyframe)) for p in self._cc.encode(frame)]
 
     def close(self) -> None:
-        try:
-            self._cc.encode(None)
-        except Exception:
-            pass
+        with self._lock:
+            cc, self._cc = getattr(self, "_cc", None), None
+            if cc is None:
+                return
+            try:
+                cc.encode(None)          # drain, so the context can be freed cleanly
+            except Exception:
+                pass
 
 
 class EyeDecoder:

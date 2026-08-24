@@ -39,6 +39,10 @@ public class GvRobotSession : MonoBehaviour
 
     private int lastCodec = -1;
     private bool lastFoveation;
+    // Link.Disconnect() reports "down" synchronously, before Profile is cleared, so
+    // without this a deliberate leave announces itself as a dropout -- and a Reconnect
+    // announces a failure it is in the middle of fixing.
+    private bool leaving;
     public bool Connected => Link != null && Link.Connected;
 
     private void Awake()
@@ -50,6 +54,18 @@ public class GvRobotSession : MonoBehaviour
         }
         instance = this;
         Link = new GvRobotLink();
+        // Connection state is the one thing the operator always needs to know and can
+        // never infer: video simply stops, which looks identical to a robot that has
+        // nothing to send. Announced from here rather than the display because the link
+        // outlives any one scene.
+        Link.ConnectionChanged += up =>
+        {
+            if (up)
+                GvToast.Post("Connected to " + (Profile != null ? Profile.name : "robot"),
+                             "info", 2f);
+            else if (Profile != null && !leaving)
+                GvToast.Post("Lost the robot - retrying", "warn", 4f);
+        };
     }
 
     /// <summary>
@@ -85,8 +101,16 @@ public class GvRobotSession : MonoBehaviour
     /// <summary>End the session on purpose. The link stays reusable.</summary>
     public void Disconnect()
     {
-        if (Link != null)
-            Link.Disconnect();
+        leaving = true;
+        try
+        {
+            if (Link != null)
+                Link.Disconnect();
+        }
+        finally
+        {
+            leaving = false;
+        }
         Profile = null;
         lastCodec = -1;
         lastFoveation = false;
@@ -108,6 +132,7 @@ public class GvRobotSession : MonoBehaviour
             return false;
         Disconnect();
         Connect(p, codec, fovea);
+        GvToast.Post("Reconnecting to " + p.name, "info", 2f);
         return true;
     }
 

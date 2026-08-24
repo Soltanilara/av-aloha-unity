@@ -32,10 +32,11 @@ from gvlink.camera import CameraParams
 from gvlink.ratecontrol import BitrateController
 from gvlink.robotlink import RobotLink
 from gvlink.pattern import make_chart
-from gvlink.protocol import (BUTTON_ONE, BUTTON_TWO, CODEC_H264, CODEC_MJPEG,
+from gvlink.protocol import (INPUT_HEAD_VALID, BUTTON_ONE, BUTTON_TWO, CODEC_H264, CODEC_MJPEG,
                              CODEC_NAMES, DEFAULT_PORTS, EYE_LEFT, EYE_RIGHT,
                              MTU_PAYLOAD, MTU_PAYLOAD_TUNNEL, HeadsetInput)
 from gvlink.stream import EyeStreamSender, make_udp_socket
+from gvlink.ui import HeadsetUi
 
 
 def parse_wh(s: str) -> tuple[int, int]:
@@ -217,6 +218,10 @@ def main() -> int:
                     help="send the plain full-frame canvas (the Quest 2/3 path)")
     ap.add_argument("--auto-gaze", action="store_true",
                     help="sweep the fovea when no real gaze is arriving")
+    ap.add_argument("--ui-demo", action="store_true",
+                    help="publish a moving guide and a couple of markers, so the "
+                         "headset's ui/* rendering can be checked without writing "
+                         "robot code first")
     ap.add_argument("--viser", action="store_true",
                     help="serve a live 3D view of the headset, hands and controllers "
                          "(needs the viz extra: uv sync --extra viz)")
@@ -360,6 +365,7 @@ def main() -> int:
     stream_started = None    # when the current viewer appeared; idle time is not fps
     want_fovea = not args.no_fovea
     idle_notice = 0.0
+    last_ui = 0.0
     started = time.monotonic()
     next_at = started
     n = 0
@@ -375,17 +381,115 @@ def main() -> int:
                              min_kbps=args.min_bitrate,
                              max_kbps=max(args.bitrate, args.min_bitrate))
 
+    # Boxed, and read by the send loop. Subscriber callbacks run on the control
+    # channel's socket thread, so this one decides and records; it does not act.
+    wanted_kbps = [args.bitrate]
+
     def on_viewer_stats(data):
         if args.no_adapt or not isinstance(data, dict):
             return
         loss = float(data.get("loss", 0.0))
         lat = data.get("lat")
-        want = rate.update(time.monotonic(), loss,
-                           float(lat) if lat is not None else None)
-        for snd in senders.values():
-            snd.set_bitrate(want)
+        # Deliberately does NOT call set_bitrate here. Retargeting rebuilds the x264
+        # encoder, and doing that from this thread does it underneath the send loop's
+        # in-flight encode() -- a data race on libx264's internal frame pool that does
+        # not raise but aborts the process, seconds later, once the two threads happen
+        # to collide. The send loop applies this between frames instead, which is also
+        # where the resulting keyframe belongs.
+        wanted_kbps[0] = rate.update(time.monotonic(), loss,
+                                     float(lat) if lat is not None else None)
 
     link.subscribe("viewer/stats", on_viewer_stats)
+
+    # A moving target and a couple of markers, so the headset end can be checked on a
+    # device without writing any robot code first. Guidance the operator can walk to is
+    # the only way to tell a working guide from one that merely renders.
+    ui = HeadsetUi(link)
+    demo_warned = [False]
+    def _reached(d):
+        print(f"guide reached: {d}")
+        ui.toast(f"reached with your {d.get('src', 'hand')}", "info", 1.5)
+        ui.buzz(d.get("side", "r"), 0.7, 0.08)
+
+    ui.on_guide_reached(_reached)
+
+    def _rotate(q, v):
+        """Rotate v by unit quaternion q=(x,y,z,w). Handedness-agnostic."""
+        qx, qy, qz, qw = q
+        # t = 2 * (q.xyz x v);  v' = v + qw*t + (q.xyz x t)
+        tx = 2.0 * (qy * v[2] - qz * v[1])
+        ty = 2.0 * (qz * v[0] - qx * v[2])
+        tz = 2.0 * (qx * v[1] - qy * v[0])
+        return (v[0] + qw * tx + (qy * tz - qz * ty),
+                v[1] + qw * ty + (qz * tx - qx * tz),
+                v[2] + qw * tz + (qx * ty - qy * tx))
+
+    def _flat(v):
+        """Drop the pitch, keep the heading. A demo that tilts with a glance is unreadable."""
+        n = math.hypot(v[0], v[2])
+        return (0.0, 0.0, 1.0) if n < 1e-4 else (v[0] / n, 0.0, v[2] / n)
+
+    def ui_demo(t: float) -> None:
+        """
+        Everything is placed relative to the operator's own head pose, which the uplink
+        is already sending us. Nothing here assumes where the floor is or which tracking
+        origin the headset was configured with -- the first version of this demo did, got
+        it wrong, and put a "floor" plate at eye level.
+
+        It also happens to be the round trip the protocol is built around: a pose that
+        arrived from the headset, offset, and sent straight back as geometry.
+        """
+        p = input_rx.fresh()
+        if p is None or not (p.flags & INPUT_HEAD_VALID):
+            # Nothing to anchor to. Said out loud once, because silently drawing nothing
+            # is indistinguishable from the headset failing to render what was sent --
+            # which is exactly the confusion this demo exists to remove.
+            if not demo_warned[0]:
+                demo_warned[0] = True
+                print("ui-demo: no head pose on the uplink yet; nothing to anchor to. "
+                      f"Is the headset sending to :{args.input_port}?")
+            return
+        if demo_warned[0]:
+            demo_warned[0] = False
+            print("ui-demo: head pose arriving; drawing.")
+        head = p.head_pos
+        fwd = _flat(_rotate(p.head_rot, (0.0, 0.0, 1.0)))
+        rgt = _flat(_rotate(p.head_rot, (1.0, 0.0, 0.0)))
+
+        def at(f, r, u):
+            return (head[0] + fwd[0] * f + rgt[0] * r,
+                    head[1] + u,
+                    head[2] + fwd[2] * f + rgt[2] * r)
+
+        side = "l" if int(t / 10) % 2 == 0 else "r"
+        lateral = -0.22 if side == "l" else 0.22
+        # Drifts gently so it is obviously live, but stays inside comfortable reach.
+        target = at(0.45 + 0.05 * math.sin(t * 0.6), lateral, -0.28 + 0.06 * math.sin(t))
+
+        ui.guide_clear("r" if side == "l" else "l")
+        ui.guide(side, target, tol=0.06, hold=0.5,
+                 label=f"reach with your {'left' if side == 'l' else 'right'} hand",
+                 ttl=1.5)
+
+        ui.markers([
+            # What to do, at reading distance and just below the eye line.
+            {"id": "demo/say", "t": "text", "f": "origin", "p": list(at(1.0, 0.0, -0.10)),
+             "q": [0, 0, 0, 1], "txt": "gvlink demo - reach the sphere",
+             "size": 0.055, "c": [0.65, 0.85, 1.0, 0.95], "ttl": 1.5},
+            # A workspace volume around where the target roams, so the box marker is
+            # visibly a different thing from the guide.
+            {"id": "demo/box", "t": "box", "f": "origin", "p": list(at(0.45, lateral, -0.28)),
+             "q": [0, 0, 0, 1], "s": [0.34, 0.30, 0.28],
+             "c": [0.30, 0.55, 0.95, 0.10], "ttl": 1.5},
+            # A shoulder-width rail at target height: the line marker, and a depth cue.
+            {"id": "demo/rail", "t": "line", "f": "origin", "p": [0, 0, 0],
+             "q": [0, 0, 0, 1], "w": 0.005,
+             "pts": [list(at(0.45, -0.40, -0.28)), list(at(0.45, 0.40, -0.28))],
+             "c": [0.55, 0.75, 1.0, 0.55], "ttl": 1.5},
+            # The head's own axes, at arm's length ahead: proves the frame round-trips.
+            {"id": "demo/axes", "t": "pose", "f": "origin", "p": list(at(0.7, 0.0, -0.45)),
+             "q": list(p.head_rot), "s": 0.10, "ttl": 1.5},
+        ])
 
     # What the viewer needs to render these images at the right angular size and in the
     # right place. Published as soon as a viewer connects, and answerable on request so
@@ -420,6 +524,10 @@ def main() -> int:
             # adding work to the path that reassembles packets.
             if viz is not None:
                 viz.update(input_rx.fresh())
+
+            if args.ui_demo and now - last_ui >= 0.1:
+                last_ui = now
+                ui_demo(now - started)
 
             # Who are we sending to, and in what shape?
             if args.host:
@@ -502,6 +610,11 @@ def main() -> int:
                 else:
                     gl = gr = (0.5, 0.5)
                     gaze_src = "center"
+
+            # Apply whatever the rate controller last decided, on this thread, between
+            # frames. A no-op unless the target actually moved.
+            for snd in senders.values():
+                snd.set_bitrate(wanted_kbps[0])
 
             # One widener for both eyes: they saccade together, and giving each its own
             # would let them disagree about coverage for a frame or two.

@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import socket
 import sys
+import threading
 import time
 
 import numpy as np
@@ -28,6 +29,7 @@ from gvlink.protocol import (BUTTON_ONE, BUTTON_STICK, BUTTON_TWO, EYE_LEFT,
                              INPUT_SIZE, HeadsetInput, Reassembler, VideoHeader,
                              fragment, now_us)
 from gvlink.robotlink import ControlClient, RobotLink
+from gvlink.ui import HeadsetUi
 from gvlink.stream import EyeStreamReceiver, EyeStreamSender, make_udp_socket
 
 FAILS: list[str] = []
@@ -435,6 +437,102 @@ def main() -> int:
     c4.update(60.0, 0.0, 90.0)
     check("the delay baseline drifts up on a slower path",
           c4.baseline_ms > 20.0, f"baseline {c4.baseline_ms:.0f} ms")
+
+    print("encoder under concurrent retarget")
+    # The adaptive-bitrate decision arrives on the control channel's socket thread while
+    # the send loop is inside encode(). Retargeting rebuilds the x264 encoder, and doing
+    # that underneath an in-flight encode returns frames to libx264's internal pool
+    # twice. It does not raise -- it aborts the process, seconds later, wherever the two
+    # threads happened to collide, which is why it read as "the robot just dies".
+    from gvlink.video import EyeEncoder
+    enc = EyeEncoder(256, 256, fps=30, bitrate_kbps=4000, threads=2)
+    stop = threading.Event()
+    err = []
+
+    def hammer():
+        k = 4000
+        while not stop.is_set():
+            try:
+                k = 6000 if k == 4000 else 4000
+                enc.set_bitrate(k)
+            except Exception as e:       # noqa: BLE001 -- reported, not swallowed
+                err.append(repr(e))
+                return
+            time.sleep(0.001)
+
+    t = threading.Thread(target=hammer, daemon=True)
+    t.start()
+    px = np.zeros((256, 256, 3), np.uint8)
+    for i in range(240):
+        px[(i * 5) % 200:(i * 5) % 200 + 40] = (i * 7) % 255
+        enc.encode(px)
+    stop.set()
+    t.join(2.0)
+    check("survives retargeting from another thread while encoding",
+          not err and enc.rebuilds > 0, f"{enc.rebuilds} rebuilds {'; '.join(err)}")
+    enc.close()
+
+    print("headset ui wire format")
+    # A recording link: HeadsetUi is a front for publish(), so what matters is that the
+    # bytes it produces are the ones GvSceneCommands.cs parses. Field names are checked
+    # against that file by eye; the point of this test is that they stop changing by
+    # accident.
+    class _Rec:
+        def __init__(self):
+            self.sent = []
+        def publish(self, topic, data):
+            self.sent.append((topic, data))
+            return True
+        def subscribe(self, topic, fn):
+            pass
+
+    rec = _Rec()
+    ui = HeadsetUi(rec)
+    ui.guide("l", (0.1, 1.2, -0.3), (0, 0, 0, 1), tol=0.02, ang=15, label="home")
+    topic, g = rec.sent[-1]
+    check("guide topic and shape", topic == "ui/guide"
+          and g["side"] == "l" and g["p"] == [0.1, 1.2, -0.3]
+          and g["q"] == [0, 0, 0, 1] and g["tol"] == 0.02 and g["ang"] == 15.0
+          and g["label"] == "home")
+    # Absent, not zero: a zero angular tolerance would mean "match the orientation
+    # exactly", which no hand ever does, so a guide that only cares about position would
+    # silently never be reachable.
+    ui.guide("r", (0, 0, 0))
+    check("  an omitted angular tolerance is absent, not zero",
+          "ang" not in rec.sent[-1][1])
+
+    ui.marker("b", "box", pos=(0, 1, -0.4), scale=(0.6, 0.4, 0.3),
+              colour=(1, 0.5, 0, 0.15), ttl=2.0)
+    topic, m = rec.sent[-1]
+    spec = m["m"][0]
+    check("marker topic and shape", topic == "ui/marker" and spec["id"] == "b"
+          and spec["t"] == "box" and spec["s"] == [0.6, 0.4, 0.3]
+          and spec["c"] == [1.0, 0.5, 0.0, 0.15] and spec["ttl"] == 2.0)
+
+    ui.marker("l", "line", points=[(0, 1, 0), (0.2, 1.1, -0.1)], width=0.005)
+    spec = rec.sent[-1][1]["m"][0]
+    check("  a line carries its points and width",
+          spec["pts"] == [[0, 1, 0], [0.2, 1.1, -0.1]] and spec["w"] == 0.005)
+
+    ui.marker("t", "sphere", scale=0.08)
+    check("  a scalar scale stays scalar", rec.sent[-1][1]["m"][0]["s"] == 0.08)
+
+    ui.toast("hello", "warn", 2)
+    check("toast", rec.sent[-1] == ("ui/toast", {"txt": "hello", "sev": "warn",
+                                                 "secs": 2.0}))
+    ui.buzz("r", 0.6, 0.05)
+    check("haptics", rec.sent[-1] == ("hx", {"side": "r", "amp": 0.6, "secs": 0.05}))
+
+    ui.marker_clear("traj")
+    check("clear by prefix", rec.sent[-1] == ("ui/marker", {"clear": "traj"}))
+    ui.guide_clear("l")
+    check("clear a guide", rec.sent[-1] == ("ui/guide", {"side": "l", "clear": True}))
+
+    # Everything must survive msgpack, since that is how it actually travels.
+    import msgpack as _mp
+    ok = all(_mp.unpackb(_mp.packb(d, use_bin_type=True), raw=False) == d
+             for _, d in rec.sent)
+    check("every message round-trips through msgpack unchanged", ok)
 
     print("reconnect")
     # The headset menu's Reconnect drops the control channel and immediately redials with
