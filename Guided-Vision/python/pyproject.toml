@@ -1,7 +1,7 @@
 [project]
 name = "gvlink"
 version = "0.1.0"
-description = "Guided-Vision robot-side link: stereo video sender, protocol, and bench tools"
+description = "Quest VR Teleoperation robot-side link: stereo video sender, protocol, and bench tools"
 requires-python = ">=3.10"
 dependencies = [
     "av>=13.0",

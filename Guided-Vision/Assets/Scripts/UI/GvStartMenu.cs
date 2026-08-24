@@ -8,10 +8,10 @@ using TMPro;
 /// <summary>
 /// The connection and configuration menu, built entirely in code at runtime.
 ///
-/// Replaces the old Firestore StartScene. Robots on the LAN announce themselves
-/// (gvlink/beacon.py) and appear here within a couple of seconds; anything else is
-/// picked from the saved list or typed in. Over Tailscale a remote robot is just an
-/// address like any other, so there is no separate "remote" concept to build.
+/// Robots on the LAN announce themselves (gvlink/beacon.py) and appear here within a
+/// couple of seconds; anything else is picked from the saved list or typed in. Over
+/// Tailscale a remote robot is just an address like any other, so there is no separate
+/// "remote" concept to build.
 ///
 /// Three ways in, all driving the same single selection so they can never disagree:
 /// a laser from either controller or either tracked hand, the thumbstick as a d-pad,
@@ -44,12 +44,6 @@ public class GvStartMenu : MonoBehaviour
 
     [Header("Discovery")]
     public int beaconPort = 15550;
-
-    [Tooltip("Switch off any canvas already in the scene. The menu builds its own, and " +
-             "the scene this grew from still carries the old Firestore UI; disabling " +
-             "it here beats surgery on the scene file, and costs nothing once that UI " +
-             "is finally deleted.")]
-    public bool hideExistingCanvases = true;
 
     [Tooltip("Show the room behind the menu. This is the moment the headset has just " +
              "gone on and nothing has been drawn yet; a black void there is where people " +
@@ -114,8 +108,6 @@ public class GvStartMenu : MonoBehaviour
         head = GvXr.Head();
         if (showPassthrough)
             GvPassthroughBackdrop.Ensure(gameObject);
-        if (hideExistingCanvases)
-            HideOtherCanvases();
         BuildChrome();
 
         // Built here rather than wired in the scene, for the same reason the menu is:
@@ -133,20 +125,6 @@ public class GvStartMenu : MonoBehaviour
         discovery = null;
     }
 
-    private void HideOtherCanvases()
-    {
-        int hidden = 0;
-        foreach (var c in FindObjectsByType<Canvas>(FindObjectsInactive.Exclude))
-        {
-            if (c.transform.IsChildOf(transform))
-                continue;
-            c.gameObject.SetActive(false);
-            hidden++;
-        }
-        if (hidden > 0)
-            Debug.Log($"GvStartMenu: hid {hidden} pre-existing canvas(es).");
-    }
-
     private void BuildChrome()
     {
         canvas = GvMenuUi.CreateCanvas(transform, "GvStartMenu", new Vector2(900f, 720f));
@@ -158,7 +136,7 @@ public class GvStartMenu : MonoBehaviour
 
         GvMenuUi.Panel(canvas.transform, GvMenuUi.Background);
 
-        titleText = GvMenuUi.Label(canvas.transform, "Title", "Guided Vision", 42f, GvMenuUi.Text);
+        titleText = GvMenuUi.Label(canvas.transform, "Title", "Quest VR Teleoperation", 42f, GvMenuUi.Text);
         var trt = titleText.rectTransform;
         trt.anchorMin = new Vector2(0f, 1f);
         trt.anchorMax = new Vector2(1f, 1f);

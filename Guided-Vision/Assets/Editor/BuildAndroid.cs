@@ -11,12 +11,12 @@ using UnityEngine;
 ///     Unity -batchmode -quit -projectPath Guided-Vision \
 ///           -executeMethod BuildAndroid.Build -logFile -
 ///
-/// Output path defaults to &lt;project&gt;/Builds/GuidedVision.apk; override with
+/// Output path defaults to &lt;project&gt;/Builds/QuestVRTeleoperation.apk; override with
 /// -buildOutput &lt;path&gt;. Exits non-zero on failure so it can be scripted.
 /// </summary>
 public static class BuildAndroid
 {
-    private const string DefaultOutput = "Builds/GuidedVision.apk";
+    private const string DefaultOutput = "Builds/QuestVRTeleoperation.apk";
 
     public static void Build()
     {

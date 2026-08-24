@@ -75,11 +75,10 @@ public class GvBeacon
 /// <summary>
 /// Listens for robot beacons on the LAN.
 ///
-/// This is the replacement for the Firestore robot dropdown, and it is strictly better
-/// in the way that matters: it cannot list a robot that is not actually reachable,
-/// because the listing *is* a packet that arrived. Robots outside the LAN are typed in
-/// or picked from the saved list instead -- over Tailscale that is just an address
-/// like any other (docs/PLAN.md 3.2).
+/// The list cannot contain a robot that is not actually reachable, because the listing
+/// *is* a packet that arrived. Robots outside the LAN are typed in or picked from the
+/// saved list instead -- over Tailscale that is just an address like any other
+/// (docs/PLAN.md 3.2).
 /// </summary>
 public sealed class GvDiscovery : IDisposable
 {

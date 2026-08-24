@@ -11,14 +11,6 @@ EditorBuildSettings:
   - enabled: 1
     path: Assets/Scenes/GvPassthroughScene.unity
     guid: edf69057f1cba4cddb5df3fe0af12645
-  - enabled: 1
-    path: Assets/Scenes/StartScene.unity
-    guid: a778af895b894cc43a04e10817fa3fec
-  - enabled: 1
-    path: Assets/Scenes/PassthroughScene.unity
-    guid: fed16c411cddb85469b34406d73f6c89
   m_configObjects:
-    Unity.XR.Oculus.Settings: {fileID: 11400000, guid: 619ebbc593bdd2d40a784b88f916022d, type: 2}
-    com.unity.dt.app-ui: {fileID: 11400000, guid: 1b1c20d82303e4b5781c3ef50ac1449f, type: 2}
     com.unity.xr.management.loader_settings: {fileID: 11400000, guid: 68d6387c5c00c4e4ab007d10d1cfbd93, type: 2}
     com.unity.xr.openxr.settings4: {fileID: 11400000, guid: 0f7ac9f6ded4848c1a1ef2c5c6e12cd3, type: 2}

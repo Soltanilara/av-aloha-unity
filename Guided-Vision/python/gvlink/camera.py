@@ -136,11 +136,11 @@ class CameraParams:
         """
         Read rectified parameters from JSON, in the same shape as the wire message.
 
-        Deliberately *not* the format `tools/export_calibration_for_unity.py` writes:
-        that one carries distortion coefficients and rectification rotations, which are
-        the inputs to rectification, not its output. After `cv2.stereoRectify` the
-        matrices you want are P1 and P2 -- fx = P1[0,0], cx = P1[0,2], and the baseline
-        is -P2[0,3] / fx.
+        Deliberately *not* a raw calibration dump: those carry distortion coefficients
+        and rectification rotations, which are the inputs to rectification, not its
+        output. After `cv2.stereoRectify` the matrices you want are P1 and P2 --
+        fx = P1[0,0], cx = P1[0,2], and the baseline is -P2[0,3] / fx. Use
+        `from_stereo_rectify` if that is what you have.
         """
         with open(path) as f:
             return CameraParams.from_wire(json.load(f))

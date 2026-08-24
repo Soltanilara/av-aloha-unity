@@ -118,7 +118,7 @@ class HeadsetViz:
     exactly the confusion this is meant to remove.
     """
 
-    def __init__(self, port: int = 8080, label: str = "guided-vision") -> None:
+    def __init__(self, port: int = 8080, label: str = "quest-teleop") -> None:
         import viser                     # deferred: optional dependency
 
         self.server = viser.ViserServer(port=port, label=label)

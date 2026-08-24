@@ -64,9 +64,10 @@ public class GvPassthroughBackdrop : MonoBehaviour
         layer = manager.GetComponent<OVRPassthroughLayer>();
         if (layer == null)
             layer = manager.gameObject.AddComponent<OVRPassthroughLayer>();
-        // Underlay: passthrough composites *behind* the eye buffer, so anything the app
-        // draws stays on top of the room.
-        layer.overlayType = OVROverlay.OverlayType.Underlay;
+        // Passthrough composites *behind* the eye buffer, so anything the app draws
+        // stays on top of the room. No longer set explicitly: OVRPassthroughLayer already
+        // defaults to Underlay, and `overlayType` is deprecated -- Meta is collapsing
+        // flexible layering down to the single background layer this always wanted.
         layer.textureOpacity = 1f;
         layer.hidden = false;
 

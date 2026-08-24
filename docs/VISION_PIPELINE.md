@@ -1,5 +1,15 @@
 # Vision pipeline — what the Unity app expects from the camera sender
 
+> **This is the v1 record.** It describes the WebRTC/Firestore app, whose code
+> (`WebRTCStreamer.cs`, `StereoCalibration.cs`, the transition scripts) was deleted when
+> v2 landed. It is kept because §2 (image contract), §3 (stereo geometry — the maths
+> behind "too close" and which knob fixes it) and §13 (choosing parameters
+> experimentally) are transport-independent and still correct, and that reasoning is not
+> written down anywhere else.
+>
+> **For anything about how v2 actually works, read [PLAN.md](PLAN.md).** Where a section
+> below gives instructions that v2 has since overturned, it says so inline.
+
 This document is the contract between:
 
 * **this repository** — the Unity app that runs on the Meta Quest (the *viewer*), and
@@ -234,12 +244,12 @@ adb push oak_stereo_calibration.json \
   /sdcard/Android/data/<package>/files/oak_stereo_calibration.json
 ```
 
-Then tick `gpuUndistort` on `WebRTCStreamer`. The file is read from
-`Application.persistentDataPath` first, so re-pushing it is enough — no rebuild.
-
-Once this is on, turn the sender's version **off**: skip the `cv2.remap` (set
-`OAK_RECTIFY["maps"] = None`) and set `GIAVA_EYE_SCALE=1.0`, `GIAVA_EYE_INWARD=0`.
-Doing it in both places would double-correct.
+> **Superseded in v2.** GPU undistort in the viewer was never finished, and v2 decided
+> against it: the robot owns the calibration and has to resample anyway, so it rectifies
+> and the viewer never sees a distortion model. What the viewer receives instead is the
+> *rectified* projection — see `gvlink/camera.py`, whose `CameraParams.from_stereo_rectify`
+> takes `P1`/`P2` straight out of `cv2.stereoRectify`. `StereoCalibration.cs` and
+> `tools/export_calibration_for_unity.py` are deleted.
 
 It is **off by default** and falls back cleanly: no calibration file, or no shader, and
 the display behaves exactly as it does today.
@@ -308,14 +318,19 @@ arms hold still while the thumbsticks are being used. A banner says so.
 
 ### Per-eye rendering
 
-Each video quad is moved onto its own layer (`LeftEyeOnly` / `RightEyeOnly`, layers 8
+> **Replaced in v2.** The layer/culling-mask scheme described here needs one camera per
+> eye, which needs MultiPass. The project renders **Single Pass Instanced**, and the
+> two-camera rig is what made the controllers painful to look at. v2 does the same job in
+> the fragment shader: `StereoEyeView` takes an `_EyeIndex` and discards fragments whose
+> `unity_StereoEyeIndex` does not match, which works in either stereo mode. Layers 8 and
+> 9 are free again. See PLAN.md for the full account.
+
+Each video quad was moved onto its own layer (`LeftEyeOnly` / `RightEyeOnly`, layers 8
 and 9) and culled from the other eye's camera.
 
 Both `OVRCameraRig` eye cameras ship with a culling mask of "everything", so without
 this **each eye also draws the other eye's quad**, offset by the IPD — a ghosted band
-at the lateral edges and twice the canvas overdraw for no benefit. The gaze crosshairs
-are children of the quads and follow the same isolation, which is correct: each
-crosshair marks *that eye's* gaze point.
+at the lateral edges and twice the canvas overdraw for no benefit.
 
 ---
 
@@ -502,6 +517,10 @@ Measured/known contributors, roughly largest first:
 
 ## 9. Settings reference
 
+> **v1.** Settings now live in a JSON profile (`GvConfig`) chosen in `GvStartScene`, and
+> the stereo-comfort values are edited from the in-session menu. The *meanings* below
+> still hold; the plumbing does not.
+
 Start scene → `PlayerPrefs` → `WebRTCStreamer`:
 
 | PlayerPref | Default | Meaning |
@@ -520,32 +539,26 @@ Start scene → `PlayerPrefs` → `WebRTCStreamer`:
 
 The last six are written by the in-headset tuning mode, not by the start scene UI.
 
-Inspector-only (on `WebRTCStreamer` in `PassthroughScene`): `metadataLength`,
-`enableFrameStats`, `showStats`, `staleFrameMs`, `disableDynamicResolution`,
-`useMaxDisplayFrequency`, `isolateEyeLayers`, `gpuUndistort`, `calibrationFile`.
+Inspector-only equivalents now live on `GvStereoDisplay` in `GvPassthroughScene`.
+`isolateEyeLayers`, `gpuUndistort` and `calibrationFile` no longer exist.
 
 ---
 
 ## 10. Project settings that matter
 
-* **Graphics API: OpenGLES3, not Vulkan.** Vulkan crashes the WebRTC package.
-* **Stereo Rendering Mode.** The README asks for Multi Pass, but the project's active
-  Android XR loader is **OpenXR** (not the Oculus XR plugin), and OpenXR's render mode
-  is currently set to **Single Pass Instanced** (`OpenXR Package Settings`,
-  `m_renderMode: 1`; the Oculus plugin's own `m_StereoRenderingModeAndroid: 0` does not
-  apply because that loader is inactive). Unity renders a camera whose `stereoTargetEye`
-  is Left or Right in its own pass even under Single Pass Instanced, so per-eye cameras
-  and per-eye culling masks are expected to work either way — but this is worth
-  confirming rather than assuming. The HUD prints the live
-  `XRSettings.stereoRenderingMode` and whether per-eye layer isolation was applied, and
-  the app logs a warning if the mode is not MultiPass. **Check it in the headset by
-  closing one eye at a time** (§12f). If both eyes show the same image, switch OpenXR to
-  Multi Pass.
-* **Layers 8 and 9 are `LeftEyeOnly` / `RightEyeOnly`** and must stay.
-* **Dynamic resolution is disabled at runtime.** The scene's `OVRCameraRig` had it on
-  with a floor of 0.7, which renders the eye buffers at 70 % resolution under load —
-  the most visible softening a full-FOV video quad can suffer. Set
-  `disableDynamicResolution = false` on `WebRTCStreamer` to get it back.
+* **Graphics API: OpenGLES3, not Vulkan.** (v1 reason: Vulkan crashed the WebRTC
+  package. v2 keeps ES3 because `gvnative` hands MediaCodec output over as a GL_OES
+  external texture.)
+* **Stereo Rendering Mode: Single Pass Instanced.** The paragraph that used to sit here
+  concluded the build was MultiPass and asked you to keep it that way. **That was wrong**
+  — it read the *Editor's* `XRSettings.stereoRenderingMode`. The Android build has always
+  been Single Pass Instanced. Keep it: the per-eye split is done in the shader
+  (`_EyeIndex`), which is correct in either mode and costs one camera instead of two.
+* **Layers 8 and 9 are free.** They were `LeftEyeOnly` / `RightEyeOnly`; nothing uses
+  them now.
+* **Dynamic resolution is disabled at runtime**, by `GvStereoDisplay`. The scene's
+  `OVRCameraRig` had it on with a floor of 0.7, which renders the eye buffers at 70 %
+  resolution under load — the most visible softening a full-FOV video quad can suffer.
 
 ---
 
@@ -553,12 +566,13 @@ Inspector-only (on `WebRTCStreamer` in `PassthroughScene`): `metadataLength`,
 
 | Path | What it is |
 |---|---|
-| `Guided-Vision/Assets/Scripts/PassthroughScene/WebRTCStreamer.cs` | the whole receive + display + telemetry path |
-| `Guided-Vision/Assets/Scripts/PassthroughScene/StereoCalibration.cs` | loads the camera calibration JSON |
-| `Guided-Vision/Assets/Resources/StereoEyeView.shader` | per-eye edge treatment + optional GPU undistort |
-| `Guided-Vision/Assets/Scripts/StartScene/TransitionPassthroughScene.cs` | connection settings UI |
-| `tools/export_calibration_for_unity.py` | run in the GIAVA env to produce the calibration JSON |
-| `docs/VISION_PIPELINE.md` | this file |
+| `Guided-Vision/Assets/Scripts/Video/GvStereoDisplay.cs` | stereo layout, eye materials, display config, telemetry |
+| `Guided-Vision/Assets/Scripts/Video/GvVideoLink.cs` | receive + decode, MediaCodec on device or C# MJPEG in the Editor |
+| `Guided-Vision/Assets/Scripts/Video/GvCameraParams.cs` | the rectified projection the robot sends, and the quad it implies |
+| `Guided-Vision/Assets/Resources/StereoEyeView.shader` | per-eye selection (`_EyeIndex`) and edge treatment |
+| `Guided-Vision/Assets/Scripts/UI/GvStartMenu.cs` | connection UI, built at runtime |
+| `Guided-Vision/python/gvlink/camera.py` | the sender's half of the camera contract |
+| `docs/VISION_PIPELINE.md` | this file (v1 record) |
 
 ---
 
@@ -616,11 +630,9 @@ doing its job against a worse network, and it is the number to attack next.
 
 ### Regression checks after any change here
 
-* Project builds for Android (`OpenGLES3`, Multi Pass).
-* Both eyes show video and both gaze crosshairs track.
+* Project builds for Android (`OpenGLES3`, Single Pass Instanced).
+* Both eyes show video, and closing one eye at a time shows *different* images.
 * The robot still receives headset data — move a controller, watch the sender.
-* Arm-out-of-sync ghosts still appear.
-* Layers 8/9 still named `LeftEyeOnly` / `RightEyeOnly`.
 
 ---
 

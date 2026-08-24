@@ -1,5 +1,5 @@
 """
-Wire protocol for Guided-Vision v2.
+Wire protocol for Quest VR Teleoperation.
 
 Both ends -- this package and the Unity/C# headset client -- have to agree on these
 bytes exactly, so the struct formats and constants live in one place. Keep in sync

@@ -1,16 +1,12 @@
 using UnityEngine;
 using UnityEngine.UI;
-using TMPro;
 
 /// <summary>
 /// Displays the two decoded eye streams as one head-locked quad per eye.
 ///
-/// This is the WebRTC-free replacement for WebRTCStreamer's display half. The stereo
-/// geometry, edge treatment and display configuration are carried over from it
-/// unchanged -- that tuning is the accumulated result of actually wearing the thing,
-/// and none of it had anything to do with the transport. What changed is where the
-/// pixels come from: two GvVideoSource instances instead of two WebRTC tracks, and a
-/// foveal atlas instead of a plain frame.
+/// The stereo geometry, edge treatment and display configuration here are the
+/// accumulated result of actually wearing the thing, and none of it depends on the
+/// transport -- the pixels arrive from two GvVideoSource instances as a foveal atlas.
 ///
 /// Nothing here queues video. Each source points at the newest decoded texture; if
 /// frames arrive faster than Unity renders, the extra ones are overwritten rather
@@ -24,7 +20,6 @@ public class GvStereoDisplay : MonoBehaviour
     public Canvas leftCanvas;
     public Canvas rightCanvas;
     public Transform headset;
-    public TextMeshProUGUI debugText;
 
     [Header("Transport")]
     [Tooltip("Robot address used only when no profile was chosen in the menu -- i.e. " +
@@ -113,12 +108,6 @@ public class GvStereoDisplay : MonoBehaviour
              "missed one at 120. 0 means no ceiling.")]
     public float maxDisplayFrequency = 90f;
 
-    [Tooltip("Legacy: cull each eye's quad from the other eye's camera. Only does " +
-             "anything with one camera per eye, which needs MultiPass. The shader's " +
-             "_EyeIndex does this job in either stereo mode, so this is off by default " +
-             "and exists only for a scene still running the two-camera rig.")]
-    public bool isolateEyeLayers = false;
-
     [Tooltip("How much telemetry to show. Off is a legitimate default once a link is " +
              "trusted: the centre of the view is where the work is, and the video is " +
              "the point.")]
@@ -149,8 +138,6 @@ public class GvStereoDisplay : MonoBehaviour
     private GvCameraParams camera;
     private GvRobotProfile profile;
     private string robotStatus = "";
-    private RectTransform hudCanvasRect;
-    private float hudScalePerMetre;
     private readonly System.Text.StringBuilder stats = new System.Text.StringBuilder(512);
     private readonly GvFrameStats frameStats = new GvFrameStats();
     // Refreshed on the stats tick rather than read per frame: it is a plugin call, and
@@ -283,49 +270,6 @@ public class GvStereoDisplay : MonoBehaviour
             if (eye.image != null)
                 eye.image.raycastTarget = false;   // nothing raycasts the video quad
         }
-
-        if (isolateEyeLayers)
-            IsolateEyeLayers();
-    }
-
-    /// <summary>
-    /// Put each eye's quad on its own layer and cull it from the other eye's camera.
-    /// Without this each eye also draws the other's quad, offset by the IPD -- visible
-    /// as a ghosted band at the edges, and double the canvas overdraw for no benefit.
-    /// </summary>
-    private void IsolateEyeLayers()
-    {
-        int leftLayer = LayerMask.NameToLayer("LeftEyeOnly");
-        int rightLayer = LayerMask.NameToLayer("RightEyeOnly");
-        if (leftLayer < 0 || rightLayer < 0)
-        {
-            Debug.LogWarning("GvStereoDisplay: LeftEyeOnly/RightEyeOnly layers are missing; " +
-                             "both eyes will draw both quads. Add them in Project Settings > Tags and Layers.");
-            return;
-        }
-        if (left.canvas == null || right.canvas == null || left.camera == null || right.camera == null)
-        {
-            Debug.LogWarning("GvStereoDisplay: could not resolve both eye canvases/cameras; " +
-                             "skipping per-eye layer isolation.");
-            return;
-        }
-
-        SetLayerRecursively(left.canvas.gameObject, leftLayer);
-        SetLayerRecursively(right.canvas.gameObject, rightLayer);
-        left.camera.cullingMask &= ~(1 << rightLayer);
-        right.camera.cullingMask &= ~(1 << leftLayer);
-
-        // No mode check here any more. Layer isolation only works with one camera per
-        // eye, which only MultiPass provides -- but _EyeIndex in the shader does the same
-        // job in either mode, so this is now an optimisation (it skips drawing the other
-        // eye's quad entirely) rather than the thing correctness depends on.
-    }
-
-    private static void SetLayerRecursively(GameObject go, int layer)
-    {
-        go.layer = layer;
-        for (int i = 0; i < go.transform.childCount; i++)
-            SetLayerRecursively(go.transform.GetChild(i).gameObject, layer);
     }
 
     private void SetUpEyeMaterials()
@@ -342,10 +286,9 @@ public class GvStereoDisplay : MonoBehaviour
             if (eye.image == null)
                 continue;
             eye.material = new Material(shader) { name = "StereoEyeView (" + eye.name + ")" };
-            // The quad's own eye, tested per fragment. This is what actually keeps the
-            // left image out of the right eye; the layer/culling-mask route below is a
-            // second belt for the legacy two-camera rig and needs MultiPass to work at
-            // all, which this does not.
+            // The quad's own eye, tested per fragment. This is what keeps the left
+            // image out of the right eye, and unlike per-eye cameras it works under
+            // Single Pass Instanced, which is what this project renders with.
             eye.material.SetFloat("_EyeIndex", eye.index);
             eye.image.material = eye.material;
         }
@@ -502,10 +445,7 @@ public class GvStereoDisplay : MonoBehaviour
     }
 
     /// <summary>
-    /// Stand up the code-built readout and switch the scene's own debug canvas off.
-    ///
-    /// The old one is a leftover sized for reading a log on a monitor: large type, dead
-    /// centre, permanently on. In a headset that is directly over the manipulation area.
+    /// Stand up the telemetry readout.
     /// </summary>
     private void SetUpHud()
     {
@@ -513,13 +453,7 @@ public class GvStereoDisplay : MonoBehaviour
         if (hud == null)
             hud = gameObject.AddComponent<GvHud>();
         hud.Mode = statsMode;
-
-        if (debugText != null)
-        {
-            var legacy = debugText.GetComponentInParent<Canvas>();
-            if (legacy != null)
-                legacy.gameObject.SetActive(false);
-        }
+        hud.distance = hudDistance;
     }
 
     /// <summary>
@@ -568,28 +502,10 @@ public class GvStereoDisplay : MonoBehaviour
 
     public void ApplyHudDistance()
     {
-        // The code-built readout re-places itself; the legacy canvas is off.
-        if (hud != null)
-            hud.Recentre();
-
-        if (debugText == null)
+        if (hud == null)
             return;
-        if (hudCanvasRect == null)
-        {
-            var canvas = debugText.GetComponentInParent<Canvas>();
-            if (canvas == null)
-                return;
-            hudCanvasRect = canvas.GetComponent<RectTransform>();
-            if (hudCanvasRect == null)
-                return;
-            float z = Mathf.Max(0.01f, hudCanvasRect.localPosition.z);
-            hudScalePerMetre = hudCanvasRect.localScale.x / z;
-        }
-        float d = Mathf.Max(0.2f, hudDistance);
-        var p = hudCanvasRect.localPosition;
-        hudCanvasRect.localPosition = new Vector3(p.x, p.y, d);
-        if (hudScalePerMetre > 0f)
-            hudCanvasRect.localScale = Vector3.one * (hudScalePerMetre * d);
+        hud.distance = Mathf.Max(0.2f, hudDistance);
+        hud.Recentre();
     }
 
     /// <summary>

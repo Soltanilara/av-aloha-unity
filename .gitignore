@@ -35,6 +35,10 @@ webrtc_env/
 Guided-Vision/*.slnx
 Guided-Vision/mono_crash.*
 
+# Android/gradle/ninja scratch from IL2CPP builds: CMake caches and .o files, rebuilt
+# every build. This was tracked by accident.
+Guided-Vision/.utmp/
+
 # Crash-recovery scenes Unity drops into Assets/ after an editor crash. They are stale
 # copies of real scenes and do nothing but throw import errors. Safe to delete.
 Guided-Vision/Assets/_Recovery/

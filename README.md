@@ -1,57 +1,68 @@
-# AV-ALOHA Unity
+# Quest VR Teleoperation
 
-This repository contains the Unity app code for the AV-ALOHA project for VR passthrough + teleoperation. You can find more details about the project in the following resources:
-- **AV-ALOHA Code**: [AV-ALOHA](https://github.com/Soltanilara/av-aloha)
-- **Project Page**: [AV-ALOHA Project](https://soltanilara.github.io/av-aloha/)
-- **Paper**: ["Active Vision Might Be All You Need: Exploring Active Vision in Bimanual Robotic Manipulation"](https://arxiv.org/abs/2409.17435)
+A Meta Quest app that turns the headset into a **peripheral for a robot**: it streams a
+stereo camera pair from the robot into the two eyes, sends head, hand, controller and
+gaze poses back at 90 Hz, and draws whatever the robot asks it to draw.
 
-This repository includes the full Unity project and the APK for Meta Quest 2 and Meta Quest 3. While the code may not be perfectly organized, the key scripts are limited and straightforward to understand. For WebRTC communication and video streaming, refer to the following script:
+The design goal is that teleoperation policy lives on the robot, in Python, and this app
+does not need rebuilding when that policy changes. See
+**[docs/HEADSET_API.md](docs/HEADSET_API.md)** for the interface that makes that true.
 
-- **Main WebRTC Streaming Script**:  
-  `Assets/Scripts/PassthroughScene/WebRTCStreamer.cs`
+> Renamed from "Guided-Vision". The `Gv` prefix on C# types and the `gvlink` Python
+> package are the old initials, kept deliberately: they are a stable, greppable
+> namespace, and renaming them would churn every file for no functional gain.
 
-This script renders two separate video streams for each eye (left and right), which minimizes compression issues compared to combining the streams into one. The project also includes options to use a TURN server, although this feature has not been tested yet.
+## Layout
 
-### APK Location
-- **APK**: `/TwoStreamGuidedVision.apk`
+| | |
+|---|---|
+| `Guided-Vision/` | the Unity project (Unity **6000.5.9f1**, Android / ARM64 / IL2CPP / OpenGL ES3) |
+| `Guided-Vision/Assets/Scripts/` | `Net/` uplink + control channel · `Video/` receive + display · `UI/` menus, HUD, markers |
+| `Guided-Vision/python/` | `gvlink`, the robot side: capture, foveal packing, H.264 encode, wire protocol |
+| `Guided-Vision/native/gvnative/` | the JNI shim that hands MediaCodec output to Unity as an OES texture |
+| `docs/` | see below |
 
+Two scenes, both in the build: `GvStartScene` (pick a robot) → `GvPassthroughScene`
+(the session). Both build their UI in code — there is nothing to wire in the Inspector,
+and no EventSystem.
 
-## Vision pipeline
+## Run it without a headset
 
-The stereo video path — what the app expects from the OAK-camera sender, how frames get
-from the network to the display, the stereo geometry controls, and how to test and
-measure it — is documented in **[docs/VISION_PIPELINE.md](docs/VISION_PIPELINE.md)**.
+Two terminals in `Guided-Vision/python`:
 
-Key scripts:
+```bash
+uv sync
+uv run bench_receiver.py --display --gaze-mouse   # stands in for the headset
+uv run mock_robot.py --source webcam              # or --source pattern
+```
 
-- **Receive + display + telemetry**: `Guided-Vision/Assets/Scripts/PassthroughScene/WebRTCStreamer.cs`
-- **Per-eye display shader**: `Guided-Vision/Assets/Resources/StereoEyeView.shader`
-- **Camera calibration loader**: `Guided-Vision/Assets/Scripts/PassthroughScene/StereoCalibration.cs`
-- **Calibration exporter** (run in the sender's environment): `tools/export_calibration_for_unity.py`
+`uv run mock_robot.py --viser` adds a browser visualiser of everything the headset
+reports — head, hands, controllers, gaze, plus stream metrics. `--ui-demo` exercises the
+marker/guide/toast API with no robot code at all.
 
-Stereo comfort (image too close, images too far apart to fuse, edge flicker) is tuned
-**in the headset**: press the left controller's Menu button to enter tuning mode. See
-the doc for the controls. Note that `VideoPlaneDistance` deliberately has no effect on
-perceived depth — `stereoSeparationDeg` is the control that does.
+The Unity Editor and the Meta XR Simulator can also receive the real stream: run the
+sender with `--codec mjpeg` (MediaCodec is Android-only, so the Editor decodes in C#).
 
-## Modifying the Unity Project
+## In the headset
 
-If you wish to modify the Unity project, follow these steps:
+Open the session menu with **hold B/Y**, **tap the Menu button**, or **hold a
+middle-finger pinch** in hand-tracking mode. A progress pill appears while the gesture is
+being recognised, so "not registering" and "ignored" never look alike. From there:
+disconnect, reconnect, refresh rate, telemetry level, and whether the raw controller and
+hand meshes are drawn.
 
-1. Clone the repository and open the project located at `/Guided-Vision` in Unity.
-2. Ensure that you are using **Unity Editor version 2022.3.20f1**.
-3. All settings and dependencies should load automatically, but verify that the settings below are configured correctly.
-4. Build the project for **Android**.
+## Docs
 
-### Important Project Settings
+| | |
+|---|---|
+| **[docs/PLAN.md](docs/PLAN.md)** | v2 architecture, wire format, and a decision record for every non-obvious choice |
+| **[docs/HEADSET_API.md](docs/HEADSET_API.md)** | what the robot can draw in the headset and read back from it |
+| **[docs/REMOTE.md](docs/REMOTE.md)** | operating over Tailscale rather than a LAN |
+| **[docs/VISION_PIPELINE.md](docs/VISION_PIPELINE.md)** | stereo geometry and comfort tuning; largely predates v2, see its banner |
 
-These settings should already be configured, but it’s important to check them:
+## Lineage
 
-- **Graphics API**:  
-  Go to `Player` > `Android` > `Graphics API`, and make sure that `OpenGLES3` is selected (not Vulkan). Using Vulkan may cause crashes in the WebRTC package.
-
-- **Stereo Rendering Mode**:  
-  Go to `Project Settings` > `XR Plug-in Management` > `Oculus` > `Android` and ensure that **Stereo Rendering Mode** is set to `Multi Pass`. This allows rendering two separate images to the left and right eye.
-
-- **Layers**:  
-  Layers 8 and 9 must stay named `LeftEyeOnly` and `RightEyeOnly`. Each eye's video quad is moved onto its own layer and culled from the other eye's camera; without them both eyes draw both quads.
+This began as the Unity app for **AV-ALOHA** — [code](https://github.com/Soltanilara/av-aloha),
+[project page](https://soltanilara.github.io/av-aloha/),
+[paper](https://arxiv.org/abs/2409.17435) — which used WebRTC for transport and Firestore
+for signalling. Both are gone; v2 is a direct UDP video and control stack.

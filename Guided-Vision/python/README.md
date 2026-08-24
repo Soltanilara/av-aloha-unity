@@ -1,6 +1,6 @@
-# gvlink — Guided-Vision robot side
+# gvlink — robot side
 
-The robot half of the Guided-Vision v2 stereo teleoperation link: capture, foveal
+The robot half of the Quest VR Teleoperation stereo link: capture, foveal
 atlas packing, H.264 encode, and the UDP wire protocol the Quest client speaks.
 
 Wire format and the reasoning behind it: [`docs/PLAN.md`](../../docs/PLAN.md) §4–5.

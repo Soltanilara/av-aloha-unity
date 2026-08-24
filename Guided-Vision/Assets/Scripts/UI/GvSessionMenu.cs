@@ -20,8 +20,9 @@ using TMPro;
 /// progress pill appears the moment a hold starts, so a gesture that is being seen never
 /// looks like one that is being ignored.
 ///
-/// It replaces the old TransitionStartScene, which loaded a scene outright on a single
-/// unguarded press.
+/// Leaving a session is deliberately a hold rather than a press: the app this grew from
+/// unloaded the scene on a single unguarded button, which is easy to do by accident
+/// while wearing the thing.
 /// </summary>
 public class GvSessionMenu : MonoBehaviour
 {

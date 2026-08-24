@@ -1,4 +1,4 @@
-// Per-eye video display shader for the Guided-Vision stereo viewer.
+// Per-eye video display shader for the Quest VR Teleoperation stereo viewer.
 //
 // Two jobs, both of which exist because a wide-angle stereo pair shown raw is
 // uncomfortable to fuse:
@@ -25,7 +25,7 @@
 // coordinates (row 0 at the top). The received texture is already flipped
 // upright by the WebRTC plugin, hence the 1-y at the end.
 
-Shader "GuidedVision/StereoEyeView"
+Shader "QuestTeleop/StereoEyeView"
 {
     Properties
     {

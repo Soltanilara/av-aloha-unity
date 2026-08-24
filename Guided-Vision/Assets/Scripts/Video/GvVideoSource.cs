@@ -6,7 +6,8 @@ using UnityEngine;
 /// Unity as an ordinary <see cref="Texture2D"/>.
 ///
 /// Nothing here touches video bytes. The socket, the reassembler and the decoder all
-/// live in com.guidedvision.gv.GvVideoStream, and the decoded frame reaches Unity as a
+/// live in com.guidedvision.gv.GvVideoStream (the Java package name predates the
+/// project rename and is matched by string in libgvnative.so), and the frame reaches Unity as a
 /// GL texture that libgvnative fills on the render thread. See docs/PLAN.md section 4.3.
 ///
 /// The texture is NOT sRGB-flagged: it holds sRGB-encoded bits in a linear texture, and

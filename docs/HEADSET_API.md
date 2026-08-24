@@ -255,9 +255,10 @@ arrive.
 
 # Also worth doing
 
-**Hide the controller and hand meshes in the teleop scene by default.** They currently render
-behind the video wall, which is why you see them when you back away. Guides are the
-intentional replacement; a menu toggle can bring the raw meshes back for debugging.
+**~~Hide the controller and hand meshes in the teleop scene by default.~~** *Done.* The
+red `ErrorMaterial` arm meshes and the `KeyboardInteractor` selection dots are deleted
+outright; the remaining controller/hand meshes are off by default and behind a
+"Show controllers / hands" toggle in the session menu. Guides are the intended replacement.
 
 **A "where am I" affordance.** After a recentre or a long session, a faint floor grid or an
 origin gizmo on demand costs nothing and answers a question that is otherwise unanswerable

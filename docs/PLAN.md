@@ -958,16 +958,34 @@ both the transport and the UI.
 
 ## 11. What gets deleted
 
+**Done — 2026-08-24.** Held back until v2 had been flown on the device, on the principle
+that you do not delete the only thing that works until the replacement has replaced it.
+It has, so:
+
 * `com.unity.webrtc` package dependency
-* All Firestore REST code in `WebRTCStreamer.cs` and `TransitionPassthroughScene.cs`,
-  and the ProjectID/Password/RobotID `PlayerPrefs` keys
-* TURN server config fields in the StartScene
-* `webrtc_robot.py`, `webrtc_user.py` at the repo root
+* `WebRTCStreamer.cs` (1369 lines), `TransitionStartScene.cs`,
+  `TransitionPassthroughScene.cs`, `InputFieldKeyboardSelect.cs`, `AxisGizmo.cs` — with
+  them the Firestore REST code and the ProjectID/Password/RobotID `PlayerPrefs` keys
+* `PassthroughScene.unity`, `StartScene.unity`, and the legacy canvases still sitting in
+  the v2 scenes — the three settings canvases, the TURN server fields, the gaze pointer,
+  the `EventSystem`, the `SampleMetadata` marker. v2's menus hit-test their own rows, so
+  there is nothing left that needs an EventSystem.
+* `webrtc_robot.py`, `webrtc_user.py`, and `TwoStreamGuidedVision.apk` at the repo root
+* Layers 8/9 (`LeftEyeOnly` / `RightEyeOnly`), and with them `isolateEyeLayers`,
+  `IsolateEyeLayers()` and `SetLayerRecursively()` — see §"per-eye" below
+* `GvStereoDisplay.debugText` and `GvStartMenu.hideExistingCanvases`, both of which only
+  existed to switch off scene objects that are now gone
 
 ## 12. What gets kept
 
-* All stereo layout and comfort maths from `WebRTCStreamer.cs` (§0)
-* `StereoCalibration.cs` and `tools/export_calibration_for_unity.py` — GPU undistort is
-  orthogonal to transport and still the right call
-* The display half of `VISION_PIPELINE.md`, updated to point at the new transport
-* The per-eye layer isolation, dynamic-resolution and display-frequency handling
+* All stereo layout and comfort maths from `WebRTCStreamer.cs` (§0), now in
+  `GvStereoDisplay`
+* The display half of `VISION_PIPELINE.md`, bannered as the v1 record and corrected
+  where it gave instructions v2 has overturned
+* Dynamic-resolution and display-frequency handling
+
+**Reversed:** `StereoCalibration.cs` and `tools/export_calibration_for_unity.py` were on
+the keep list, on the reasoning that GPU undistort is orthogonal to transport. v2 decided
+the other way — the robot owns the calibration and must resample regardless, so it
+rectifies and the viewer never sees a distortion model (`gvlink/camera.py`). Both are
+deleted; `CameraParams.from_stereo_rectify` is the surviving bridge from `cv2.stereoRectify`.

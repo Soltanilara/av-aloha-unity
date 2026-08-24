@@ -1,2 +1,0 @@
-/Users/ianc/Documents/GitHub/Guided-Vision-Unity/Guided-Vision/Library/Bee/Android/Prj/IL2CPP/Gradle/unityLibrary/src/main/cpp/CMakeLists.txt
-/Users/ianc/Documents/GitHub/Guided-Vision-Unity/Guided-Vision/Library/Bee/Android/Prj/IL2CPP/Gradle/unityLibrary/src/main/cpp/FramePacing/CMakeLists.txt
