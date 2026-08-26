@@ -235,6 +235,13 @@ public sealed class GvRobotLink : IDisposable
             catch (Exception e)
             {
                 LastError = e.Message;
+                // Say it out loud.  LastError was assigned here and read by
+                // nothing, so a link that threw on every connection looked
+                // identical in the log to one that was merely idle -- the
+                // reconnect loop above cost a debugging session precisely
+                // because the reason never left this variable.
+                Debug.LogWarning($"GvRobotLink: session ended by {e.GetType().Name}: "
+                                 + e.Message);
             }
             if (!running)
                 break;
@@ -292,7 +299,23 @@ public sealed class GvRobotLink : IDisposable
             {
                 n = s.Receive(buf);
             }
-            catch (SocketException e) when (e.SocketErrorCode == SocketError.TimedOut)
+            // WouldBlock as well as TimedOut, and this is the whole session's
+            // lifetime hanging on it.  ReceiveTimeout above is 250 ms and the
+            // robot deliberately sends nothing between events ("no hello, no
+            // keepalive, no timeout to tune", robotlink.py), so this catch runs
+            // on almost every pass.  Mono on Android surfaces a timed-out
+            // blocking recv as WouldBlock, which this filter did not match --
+            // and an unmatched `when` RETHROWS: out of ReadLoop, out of Serve(),
+            // into Loop()'s catch, which set LastError (displayed nowhere) and
+            // doubled the backoff.  Measured against the real robot: every
+            // session died at 0.26-0.28 s, 26 of them in a row, reconnecting on
+            // the 0.5/1/2/4 s ladder and never resetting.  Feeding the link a
+            // message every 100 ms held the same session open past 40 s.
+            //
+            // Both codes mean the same thing here -- no data within the window --
+            // so both continue.
+            catch (SocketException e) when (e.SocketErrorCode == SocketError.TimedOut
+                                            || e.SocketErrorCode == SocketError.WouldBlock)
             {
                 continue;
             }
