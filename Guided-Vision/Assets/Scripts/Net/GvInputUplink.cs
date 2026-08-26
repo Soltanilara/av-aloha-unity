@@ -145,6 +145,20 @@ public class GvInputUplink : MonoBehaviour
         AutoWire();
         if (head == null)
             Debug.LogWarning("GvInputUplink: no head transform found; poses will be empty.");
+        // leftController/rightController are no longer load-bearing for POSE (see
+        // ReadController -- OVRInput reads it directly now), but AutoWire wiring them
+        // from a null rig.leftHandAnchor/rightHandAnchor used to fail exactly this
+        // silently, with nothing logged anywhere. Keeping the check even though the
+        // pose path no longer depends on it: a future caller of ReadPose(leftController)
+        // deserves the same warning head already gets.
+        if (leftController == null)
+            Debug.LogWarning("GvInputUplink: no left controller transform found "
+                             + "(OVRInput is still used for its pose; this only affects "
+                             + "any other code path that reads the Transform directly).");
+        if (rightController == null)
+            Debug.LogWarning("GvInputUplink: no right controller transform found "
+                             + "(OVRInput is still used for its pose; this only affects "
+                             + "any other code path that reads the Transform directly).");
 
         // Eye tracking is permission-gated and the user can refuse. Everything else
         // must keep working when they do -- foveation simply falls back to centre.
@@ -328,7 +342,37 @@ public class GvInputUplink : MonoBehaviour
 
     private GvControllerState ReadController(Transform t, OVRInput.Controller which)
     {
-        var s = new GvControllerState { Pose = ReadPose(t) };
+        // Pose comes from OVRInput, not from an anchor Transform under OVRCameraRig.
+        // AutoWire() wires head/leftController/rightController from ONE
+        // FindAnyObjectByType<OVRCameraRig>() lookup, and head has its own independent
+        // fallback (GvXr.Head()) if that lookup or rig.centerEyeAnchor comes back null --
+        // controllers do not. Meta's camera rig prefab layout has moved on since
+        // OVRCameraRig.leftHandAnchor/rightHandAnchor were the standard anchor names
+        // (this project's rig exposes "LeftHandOnControllerAnchor", not
+        // "LeftHandAnchor"), so that lookup can come back null for controllers alone,
+        // silently: AutoWire only warns when head is missing. OVRInput's controller
+        // pose query is independent of any of that -- it reads the tracking subsystem
+        // directly, in the same tracking-space-local frame ReadPose(t) computes via
+        // trackingOrigin, and it is already proven reliable here: the buttons/axes two
+        // lines down have always come through OVRInput and were never affected by the
+        // Transform wiring bug above.
+        GvPose pose;
+        try
+        {
+            pose = new GvPose
+            {
+                Valid = true,
+                Position = OVRInput.GetLocalControllerPosition(which),
+                Rotation = OVRInput.GetLocalControllerRotation(which),
+            };
+        }
+        catch (Exception)
+        {
+            // No OVR runtime (plain Editor play mode) -- fall back to whatever
+            // Transform AutoWire found, which may itself be null (Invalid pose).
+            pose = ReadPose(t);
+        }
+        var s = new GvControllerState { Pose = pose };
         try
         {
             s.Stick = OVRInput.Get(OVRInput.Axis2D.PrimaryThumbstick, which);
