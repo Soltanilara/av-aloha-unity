@@ -346,6 +346,18 @@ public class GvSessionMenu : MonoBehaviour
             items.Add(Float("Plane distance", () => display.videoPlaneDistance,
                             v => { display.videoPlaneDistance = v; p.videoPlaneDistance = v; Relayout(); },
                             0.1f, 0.3f, 10f, "{0:0.0} m"));
+            // Manual stereo trim, for a camera pair streaming UNRECTIFIED frames: a
+            // relative yaw between re-cased cameras shows up as a constant horizontal
+            // disparity everywhere in the image, and nulling it is a judgement the
+            // operator's eyes make in-session -- no build setting can know the rig.
+            // Negative brings the images together (scene nearer), positive apart.
+            // Redundant once the sender rectifies; harmless then, since 0 is a no-op.
+            items.Add(Float("Separation trim", () => display.stereoSeparationDeg,
+                            v => { display.stereoSeparationDeg = v; p.stereoSeparationDeg = v; Relayout(); },
+                            0.1f, -8f, 8f, "{0:0.0}°"));
+            items.Add(Float("Vertical trim", () => display.stereoVerticalTrimDeg,
+                            v => { display.stereoVerticalTrimDeg = v; p.stereoVerticalTrimDeg = v; Relayout(); },
+                            0.05f, -4f, 4f, "{0:0.00}°"));
             // Only where the headset offers a choice. Exposed in-session rather than as a
             // build setting because the answer is a judgement the eyes make: a rate the
             // app cannot sustain is reprojected, and reprojection is felt, not measured.
