@@ -17,7 +17,10 @@ dependencies = [
 # business on a machine whose job is encoding frames.  Install with: uv sync --extra viz
 viz = ["viser>=0.2"]
 # OAK-D stereo capture only. Install with: uv sync --extra oak
-oak = ["depthai>=3.0"]
+# Pinned exactly: 3.6+ ships RVC2 firmware that heap-crashes the OAK-D on any stream
+# config, and <3.5 has no Camera.setSensorType, without which the OV9782 is driven as
+# the mono OV9282 it misreports itself as -- see gvlink/oakcam.py.
+oak = ["depthai==3.5.0"]
 
 [build-system]
 requires = ["hatchling"]

@@ -2,10 +2,13 @@
 """
 Mock robot camera sender.
 
-Stands in for the OAK stereo pair until that side exists: takes a webcam (or a
-synthetic detail chart), duplicates it into a LEFT/RIGHT pair with a synthetic
-disparity, packs each eye into a foveal atlas, encodes H.264 and fires it at the
-headset over UDP.
+Takes a webcam (or a synthetic detail chart), duplicates it into a LEFT/RIGHT
+pair with a synthetic disparity, packs each eye into a foveal atlas, encodes
+H.264 and fires it at the headset over UDP.
+
+--source oak swaps the fake pair for a real OAK-D over USB (rectified, with its
+own calibration advertised to the viewer); everything downstream is unchanged,
+which is the point of keeping the two sources behind one read().
 
 It also listens for the gaze uplink, so the foveal path can be driven end to end
 from a laptop with the mouse standing in for an eye -- run bench_receiver.py with
@@ -13,6 +16,7 @@ from a laptop with the mouse standing in for an eye -- run bench_receiver.py wit
 
     uv run mock_robot.py --source pattern
     uv run mock_robot.py --source webcam --host 100.64.0.5
+    uv run mock_robot.py --source oak        (uv sync --extra oak; needs depthai 3.5.0)
 """
 
 from __future__ import annotations
@@ -22,6 +26,7 @@ import math
 import socket
 import threading
 import time
+from dataclasses import replace
 
 import cv2
 import numpy as np
@@ -32,7 +37,9 @@ from gvlink.camera import CameraParams
 from gvlink.ratecontrol import BitrateController
 from gvlink.robotlink import RobotLink
 from gvlink.pattern import make_chart
-from gvlink.protocol import (INPUT_HEAD_VALID, BUTTON_ONE, BUTTON_TWO, CODEC_H264, CODEC_MJPEG,
+from gvlink.protocol import (INPUT_MAGIC, INPUT_SIZE, INPUT_VERSION,
+                             INPUT_HEAD_VALID, INPUT_LEFT_VALID, INPUT_RIGHT_VALID,
+                             BUTTON_ONE, BUTTON_TWO, CODEC_H264, CODEC_MJPEG,
                              CODEC_NAMES, DEFAULT_PORTS, EYE_LEFT, EYE_RIGHT,
                              MTU_PAYLOAD, MTU_PAYLOAD_TUNNEL, HeadsetInput)
 from gvlink.stream import EyeStreamSender, make_udp_socket
@@ -64,6 +71,8 @@ class InputListener:
         self._prev_buttons = (0, 0)
         self._on_button = on_button
         self.packets = 0
+        self.rejected = 0
+        self._reported = set()
         self.rate_hz = 0.0
         self._rate_at = time.monotonic()
         self._rate_n = 0
@@ -74,13 +83,15 @@ class InputListener:
     def _run(self) -> None:
         while not self._stop.is_set():
             try:
-                data, _ = self.sock.recvfrom(4096)
+                data, addr = self.sock.recvfrom(4096)
             except socket.timeout:
                 continue
             except OSError:
                 break
             p = HeadsetInput.unpack(data)
             if p is None:
+                self.rejected += 1
+                self._report_reject(data, addr)
                 continue
             now = time.monotonic()
             with self._lock:
@@ -100,6 +111,32 @@ class InputListener:
                     pressed = now_b & ~was
                     if pressed:
                         self._on_button(hand, pressed)
+
+    def _report_reject(self, data: bytes, addr) -> None:
+        """Say why a datagram was thrown away -- once per distinct reason.
+
+        A rejected packet used to `continue` in silence, so a headset speaking the
+        wrong protocol version looked exactly like a headset sending nothing: the
+        uplink reads 0 Hz either way, and the one number that would tell them apart
+        was in the bytes being dropped. Once per reason, because this is a 90 Hz
+        stream and a per-packet warning is a warning nobody reads."""
+        magic = bytes(data[:4])
+        version = data[4] if len(data) > 4 else None
+        if len(data) < INPUT_SIZE:
+            key, why = ("short", f"{len(data)} bytes, need {INPUT_SIZE}")
+        elif magic != INPUT_MAGIC:
+            key, why = ("magic", f"magic {magic!r}, expected {INPUT_MAGIC!r} "
+                                 f"-- something else is talking to this port")
+        elif version != INPUT_VERSION:
+            key, why = (("version", version),
+                        f"protocol v{version}, this robot speaks v{INPUT_VERSION} "
+                        f"-- the headset app is an older build; rebuild and redeploy it")
+        else:
+            key, why = ("other", "unpack failed")
+        if key in self._reported:
+            return
+        self._reported.add(key)
+        print(f"uplink: dropping packets from {addr[0]}: {why}")
 
     def fresh(self):
         with self._lock:
@@ -145,13 +182,30 @@ def eye_view(src: np.ndarray, eye: int, disparity: int) -> np.ndarray:
     return out
 
 
-def format_input(p) -> str:
+def format_input(p, hs_state=None) -> str:
     """One line summarising the freshest uplink sample -- whichever of hands or
-    controllers is live -- for --print-poses."""
+    controllers is live -- for --print-poses.
+
+    Carries the validity flags and the headset's own `hs/state` because the failure
+    this line exists to diagnose is "everything reads zero", and a zero has two very
+    different causes that look identical in the numbers: a pose the headset never
+    filled in, and a headset sitting on a desk with tracking paused. `flags` separates
+    the first; `mounted` separates the second."""
     if p is None:
         return "pose: no uplink (nothing received from the headset in the last 0.5s)"
     hx, hy, hz = p.head_pos
-    parts = [f"head=({hx:+.2f},{hy:+.2f},{hz:+.2f})", f"src={p.source}"]
+    parts = [f"head=({hx:+.2f},{hy:+.2f},{hz:+.2f})"
+             + ("" if p.flags & INPUT_HEAD_VALID else "!invalid"),
+             f"src={p.source}", f"flags={p.flags:#04x}"]
+    if hs_state:
+        # Tracking pauses when the headset comes off, and every pose then reads zero
+        # while the packets keep arriving at full rate -- which looks exactly like a
+        # wiring bug in the sender. Say which it is.
+        worn = hs_state.get("mounted")
+        if worn is not None:
+            parts.append("worn" if worn else "NOT WORN (tracking paused)")
+        if hs_state.get("eye_tracking") is False:
+            parts.append("eye-tracking off")
     if p.source == "hands":
         for name, h in (("L", p.hand_l), ("R", p.hand_r)):
             if h is not None and h.tracked:
@@ -159,9 +213,18 @@ def format_input(p) -> str:
                 parts.append(f"{name} wrist=({wx:+.2f},{wy:+.2f},{wz:+.2f}) "
                              f"pinch={h.pinch_of('index'):.2f} joints={len(h.joints)}")
     else:
-        for name, c in (("L", p.left), ("R", p.right)):
+        for name, c, valid in (("L", p.left, INPUT_LEFT_VALID),
+                               ("R", p.right, INPUT_RIGHT_VALID)):
+            # An untracked controller still occupies its slot in the fixed-layout
+            # packet, so its pose reads as a perfectly good origin. Say "untracked"
+            # rather than print a zero that looks like a measurement.
+            if not p.flags & valid:
+                parts.append(f"{name} untracked")
+                continue
             cx, cy, cz = c.pos
+            qx, qy, qz, qw = c.rot
             parts.append(f"{name} pos=({cx:+.2f},{cy:+.2f},{cz:+.2f}) "
+                         f"rot=({qx:+.2f},{qy:+.2f},{qz:+.2f},{qw:+.2f}) "
                          f"trig={c.trigger:.2f} grip={c.grip:.2f} btn={c.buttons:#04x}")
     return "pose: " + " ".join(parts)
 
@@ -251,10 +314,20 @@ def main() -> int:
     ap.add_argument("--hfov", type=float, default=90.0, metavar="DEG",
                     help="horizontal field of view to advertise when there is no "
                          "calibration file (the mock camera has none)")
-    ap.add_argument("--baseline", type=float, default=0.075, metavar="M",
-                    help="metres between the two optical centres, advertised to the viewer")
+    ap.add_argument("--baseline", type=float, default=None, metavar="M",
+                    help="metres between the two optical centres (default 0.075). "
+                         "Advertised to the viewer when there is no calibration, and "
+                         "with --oak-calib it is the rig's hand-measured baseline that "
+                         "the calibration file is checked against.")
     ap.add_argument("--calib", metavar="JSON",
                     help="rectified camera parameters to advertise; see gvlink/camera.py")
+    ap.add_argument("--oak-calib", metavar="NPZ",
+                    help="checkerboard stereo calibration for --source oak (as written "
+                         "by the foveated_world_model calibration, e.g. stereo.npz). "
+                         "Preferred over the device EEPROM; --baseline is then used as "
+                         "the rig's measured baseline to check the file belongs to it.")
+    ap.add_argument("--no-oak-rectify", action="store_true",
+                    help="send the OAK pair raw and distorted instead of rectifying it")
     ap.add_argument("--mtu", type=int, default=None, metavar="BYTES",
                     help=f"UDP payload per datagram (default {MTU_PAYLOAD}); use "
                          f"{MTU_PAYLOAD_TUNNEL} over Tailscale/WireGuard, whose 1280-byte "
@@ -356,7 +429,22 @@ def main() -> int:
         except ImportError:
             print("  --source oak needs depthai; run: uv sync --extra oak")
             return 1
-        oak_cam = OakStereoCamera(src_w, src_h, args.fps)
+        try:
+            oak_cam = OakStereoCamera(src_w, src_h, args.fps,
+                                      rectify=not args.no_oak_rectify,
+                                      calib_npz=args.oak_calib,
+                                      # Only checked when the operator actually
+                                      # measured it; the default is a mock's number
+                                      # and would reject a good calibration.
+                                      expect_baseline_m=args.baseline)
+        except Exception as e:
+            print(f"  {e}")
+            return 1
+        # The device is the authority on what it actually gave us: it silently refuses
+        # modes it cannot serve, and everything below -- encoder, atlas, the shape
+        # advertised to the headset -- has to describe the frames that will really
+        # arrive, not the ones that were asked for.
+        src_w, src_h, args.fps = oak_cam.width, oak_cam.height, oak_cam.fps
     chart = make_chart(src_w, src_h)
 
     sock = make_udp_socket()
@@ -632,13 +720,29 @@ def main() -> int:
     # What the viewer needs to render these images at the right angular size and in the
     # right place. Published as soon as a viewer connects, and answerable on request so
     # a client that reconnects mid-session does not have to wait for the next one.
-    camera = (CameraParams.load(args.calib) if args.calib else
-              CameraParams.from_hfov(src_w, src_h, args.hfov, args.baseline))
+    # An explicit --calib always wins; otherwise a real camera's own calibration beats
+    # the synthesised field of view, which is only ever a stand-in for not knowing.
+    if args.calib:
+        camera = CameraParams.load(args.calib)
+    elif oak_cam is not None and oak_cam.camera_params is not None:
+        camera = oak_cam.camera_params
+    else:
+        camera = CameraParams.from_hfov(src_w, src_h, args.hfov,
+                                        0.075 if args.baseline is None else args.baseline)
+        if oak_cam is not None:
+            # Unrectified frames, and a guessed field of view on top: say both, since
+            # neither is visible to the operator from inside the headset.
+            camera = replace(camera, rectified=oak_cam.rectified)
     print(f"  camera: {camera.describe()}")
 
     @link.handler("camera/params")
     def _camera_params(_data):
         return camera.to_wire()
+
+    # What the device itself is doing: worn, eye tracking, battery. Published a couple
+    # of times a second, so this is a last-known value, not a live one.
+    hs_state = {"last": None}
+    link.subscribe("hs/state", lambda msg: hs_state.__setitem__("last", msg or {}))
 
     def on_new_session(s):
         if not s:
@@ -781,7 +885,7 @@ def main() -> int:
 
             if args.print_poses and now - last_pose_print >= 0.2:
                 last_pose_print = now
-                print(format_input(input_rx.fresh()))
+                print(format_input(input_rx.fresh(), hs_state.get("last")))
 
             if args.preview:
                 cv2.imshow("mock_robot: transmitted canvas (L | R)",
