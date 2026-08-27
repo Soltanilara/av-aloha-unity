@@ -16,6 +16,8 @@ dependencies = [
 # viewer in order to stream, and this pulls in a websocket and asset stack that has no
 # business on a machine whose job is encoding frames.  Install with: uv sync --extra viz
 viz = ["viser>=0.2"]
+# OAK-D stereo capture only. Install with: uv sync --extra oak
+oak = ["depthai>=3.0"]
 
 [build-system]
 requires = ["hatchling"]
