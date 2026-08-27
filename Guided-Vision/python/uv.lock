@@ -259,6 +259,23 @@ wheels = [
 ]
 
 [[package]]
+name = "depthai"
+version = "3.9.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "numpy", version = "2.2.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
+    { name = "numpy", version = "2.4.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version == '3.11.*'" },
+    { name = "numpy", version = "2.5.2", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
+]
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/ba/f6/63f3bfe444be5b0f78b591a2918f1dce237413aed01763c433a50817bc46/depthai-3.9.0-cp39.cp310.cp311.cp312.cp313.cp314-cp39.cp310.cp311.cp312.cp313.cp314-macosx_11_0_arm64.whl", hash = "sha256:9a53844013367d76a5152c985bd8f4a2b2a0f1eba2f4f192b969e0b1500b866e", size = 65772925, upload-time = "2026-08-15T01:24:48.028Z" },
+    { url = "https://files.pythonhosted.org/packages/33/32/5becc328e6406c0f93fd5ca66139f0682c6609f63c9e955989156842b9b4/depthai-3.9.0-cp39.cp310.cp311.cp312.cp313.cp314-cp39.cp310.cp311.cp312.cp313.cp314-macosx_11_0_x86_64.whl", hash = "sha256:80b1d255d2a2de1646d23d6d7c5dc9691b566664242eafa1bce7af6e24498b8b", size = 69335373, upload-time = "2026-08-15T01:24:52.315Z" },
+    { url = "https://files.pythonhosted.org/packages/0e/2c/34048b2f37b8dd580eeacd3413193f575715f95cd6a1d05bb2541f708c5a/depthai-3.9.0-cp39.cp310.cp311.cp312.cp313.cp314-cp39.cp310.cp311.cp312.cp313.cp314-manylinux_2_28_aarch64.whl", hash = "sha256:5a388c28e2aefaada78d4c51fccd46ecad3340854d775c89db1e0a2c517ad953", size = 80829514, upload-time = "2026-08-15T01:24:56.136Z" },
+    { url = "https://files.pythonhosted.org/packages/6e/60/24573c453f41b0c876117fb33588723fddb5ce0b3b7ca900600b68770244/depthai-3.9.0-cp39.cp310.cp311.cp312.cp313.cp314-cp39.cp310.cp311.cp312.cp313.cp314-manylinux_2_28_x86_64.whl", hash = "sha256:c42e6e7d9c04867b6996b930ecedbcab1d34c14c6d9d246e045c09481ebdad2a", size = 86312136, upload-time = "2026-08-15T01:25:00.455Z" },
+    { url = "https://files.pythonhosted.org/packages/7d/71/42bc1f84902efc294e76d4a18647d467fae7af6b7735ca0f9fe259c4d985/depthai-3.9.0-cp39.cp310.cp311.cp312.cp313.cp314-cp39.cp310.cp311.cp312.cp313.cp314-win_amd64.whl", hash = "sha256:fd6e2e5143dde5fdbaa7cf97ceb0a674a09d9f44afaf7f256807fdd5eb111d79", size = 69783906, upload-time = "2026-08-15T01:25:03.964Z" },
+]
+
+[[package]]
 name = "gvlink"
 version = "0.1.0"
 source = { editable = "." }
@@ -274,6 +291,9 @@ dependencies = [
 ]
 
 [package.optional-dependencies]
+oak = [
+    { name = "depthai" },
+]
 viz = [
     { name = "viser" },
 ]
@@ -281,13 +301,14 @@ viz = [
 [package.metadata]
 requires-dist = [
     { name = "av", specifier = ">=13.0" },
+    { name = "depthai", marker = "extra == 'oak'", specifier = ">=3.0" },
     { name = "msgpack", specifier = ">=1.0" },
     { name = "numpy", specifier = ">=1.26" },
     { name = "opencv-python", specifier = ">=4.10" },
     { name = "psutil", specifier = ">=5.9" },
     { name = "viser", marker = "extra == 'viz'", specifier = ">=0.2" },
 ]
-provides-extras = ["viz"]
+provides-extras = ["viz", "oak"]
 
 [[package]]
 name = "idna"

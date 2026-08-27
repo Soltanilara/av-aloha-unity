@@ -145,6 +145,27 @@ def eye_view(src: np.ndarray, eye: int, disparity: int) -> np.ndarray:
     return out
 
 
+def format_input(p) -> str:
+    """One line summarising the freshest uplink sample -- whichever of hands or
+    controllers is live -- for --print-poses."""
+    if p is None:
+        return "pose: no uplink (nothing received from the headset in the last 0.5s)"
+    hx, hy, hz = p.head_pos
+    parts = [f"head=({hx:+.2f},{hy:+.2f},{hz:+.2f})", f"src={p.source}"]
+    if p.source == "hands":
+        for name, h in (("L", p.hand_l), ("R", p.hand_r)):
+            if h is not None and h.tracked:
+                wx, wy, wz = h.wrist_pos
+                parts.append(f"{name} wrist=({wx:+.2f},{wy:+.2f},{wz:+.2f}) "
+                             f"pinch={h.pinch_of('index'):.2f} joints={len(h.joints)}")
+    else:
+        for name, c in (("L", p.left), ("R", p.right)):
+            cx, cy, cz = c.pos
+            parts.append(f"{name} pos=({cx:+.2f},{cy:+.2f},{cz:+.2f}) "
+                         f"trig={c.trigger:.2f} grip={c.grip:.2f} btn={c.buttons:#04x}")
+    return "pose: " + " ".join(parts)
+
+
 def register_demo_io(link: RobotLink) -> None:
     """
     A worked example of the control interface -- this is the shape real robot I/O takes.
@@ -200,7 +221,8 @@ def main() -> int:
     ap.add_argument("--input-port", type=int, default=DEFAULT_PORTS["input"])
     ap.add_argument("--control-port", type=int, default=DEFAULT_PORTS["control"],
                     help="control channel; the headset connects here")
-    ap.add_argument("--source", choices=("pattern", "webcam"), default="pattern")
+    ap.add_argument("--source", choices=("pattern", "webcam", "oak"), default="pattern",
+                    help="oak needs the depthai extra: uv sync --extra oak")
     ap.add_argument("--cam", type=int, default=0)
     ap.add_argument("--src", type=parse_wh, default="1920x1200",
                     help="per-eye source resolution (default 1920x1200)")
@@ -254,6 +276,8 @@ def main() -> int:
     ap.add_argument("--jpeg-quality", type=int, default=85)
     ap.add_argument("--duration", type=float, default=0.0, help="0 = until Ctrl-C")
     ap.add_argument("--preview", action="store_true", help="show what is being sent")
+    ap.add_argument("--print-poses", action="store_true",
+                    help="print head/hand/controller poses from the uplink to the terminal")
     ap.add_argument("--name", default="mock-robot", help="name shown in the headset's robot list")
     ap.add_argument("--no-beacon", action="store_true",
                     help="do not advertise on the LAN (the headset must be told the address)")
@@ -318,6 +342,7 @@ def main() -> int:
             return base_layout
 
     cap = None
+    oak_cam = None
     if args.source == "webcam":
         cap = cv2.VideoCapture(args.cam)
         cap.set(cv2.CAP_PROP_FRAME_WIDTH, src_w)
@@ -325,6 +350,13 @@ def main() -> int:
         if not cap.isOpened():
             print(f"could not open camera {args.cam}")
             return 1
+    elif args.source == "oak":
+        try:
+            from gvlink.oakcam import OakStereoCamera
+        except ImportError:
+            print("  --source oak needs depthai; run: uv sync --extra oak")
+            return 1
+        oak_cam = OakStereoCamera(src_w, src_h, args.fps)
     chart = make_chart(src_w, src_h)
 
     sock = make_udp_socket()
@@ -399,6 +431,7 @@ def main() -> int:
     want_fovea = not args.no_fovea
     idle_notice = 0.0
     last_ui = 0.0
+    last_pose_print = 0.0
     started = time.monotonic()
     next_at = started
     n = 0
@@ -698,16 +731,24 @@ def main() -> int:
                       f"fovea={want_layout.fovea_px()[0]}x{want_layout.fovea_px()[1]}")
             want_fovea = req_fovea
 
-            if cap is not None:
-                ok, frame = cap.read()
+            if oak_cam is not None:
+                ok, frame_l, frame_r = oak_cam.read()
                 if not ok:
-                    print("camera read failed")
+                    print("oak camera read failed")
                     break
-                if frame.shape[1] != src_w or frame.shape[0] != src_h:
-                    frame = cv2.resize(frame, (src_w, src_h))
             else:
-                frame = chart.copy()
-            overlay(frame, n)
+                if cap is not None:
+                    ok, frame = cap.read()
+                    if not ok:
+                        print("camera read failed")
+                        break
+                    if frame.shape[1] != src_w or frame.shape[0] != src_h:
+                        frame = cv2.resize(frame, (src_w, src_h))
+                else:
+                    frame = chart.copy()
+                overlay(frame, n)
+                frame_l = eye_view(frame, EYE_LEFT, args.disparity)
+                frame_r = eye_view(frame, EYE_RIGHT, args.disparity)
 
             if not want_fovea:
                 gl = gr = None
@@ -734,9 +775,13 @@ def main() -> int:
             # One widener for both eyes: they saccade together, and giving each its own
             # would let them disagree about coverage for a frame or two.
             zoom = widener.update(gl, now)
-            canvas_l = senders[EYE_LEFT].send(eye_view(frame, EYE_LEFT, args.disparity), gl, zoom)
-            canvas_r = senders[EYE_RIGHT].send(eye_view(frame, EYE_RIGHT, args.disparity), gr, zoom)
+            canvas_l = senders[EYE_LEFT].send(frame_l, gl, zoom)
+            canvas_r = senders[EYE_RIGHT].send(frame_r, gr, zoom)
             n += 1
+
+            if args.print_poses and now - last_pose_print >= 0.2:
+                last_pose_print = now
+                print(format_input(input_rx.fresh()))
 
             if args.preview:
                 cv2.imshow("mock_robot: transmitted canvas (L | R)",
@@ -782,6 +827,8 @@ def main() -> int:
             viz.stop()
         if cap is not None:
             cap.release()
+        if oak_cam is not None:
+            oak_cam.close()
         cv2.destroyAllWindows()
 
     el = time.monotonic() - (stream_started or started)
