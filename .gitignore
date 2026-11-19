@@ -49,6 +49,13 @@ Guided-Vision/Assets/_Recovery.meta
 Guided-Vision/Assets/Resources/DevAgentSettings.asset
 Guided-Vision/Assets/Resources/DevAgentSettings.asset.meta
 
+# Written by com.unity.test-framework.performance on editor open. Empty placeholder
+# data, nothing in the project reads it back.
+Guided-Vision/Assets/Resources/PerformanceTestRunInfo.json
+Guided-Vision/Assets/Resources/PerformanceTestRunInfo.json.meta
+Guided-Vision/Assets/Resources/PerformanceTestRunSettings.json
+Guided-Vision/Assets/Resources/PerformanceTestRunSettings.json.meta
+
 # TextMesh Pro samples: 6.4 MB, nothing in this project references any of the 148
 # assets, and they restore from Window > TextMeshPro > Import TMP Examples and Extras.
 # The TMP *essentials* (Resources, Shaders, Fonts) stay tracked -- those are used.

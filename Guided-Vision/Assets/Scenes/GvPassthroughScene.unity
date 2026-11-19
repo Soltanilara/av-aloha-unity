@@ -193,6 +193,8 @@ MonoBehaviour:
   videoPort: 15552
   canvasWidth: 1024
   canvasHeight: 1024
+  coarseScale: 0.35
+  foveaScale: 0.5
   sourceWidth: 1920
   sourceHeight: 1200
   videoPlaneDistance: 1
@@ -1565,6 +1567,10 @@ PrefabInstance:
       objectReference: {fileID: 0}
     - target: {fileID: 11400000, guid: 126d619cf4daa52469682f85c1378b4a, type: 3}
       propertyPath: enableDynamicResolution
+      value: 1
+      objectReference: {fileID: 0}
+    - target: {fileID: 11400000, guid: 126d619cf4daa52469682f85c1378b4a, type: 3}
+      propertyPath: _enableDynamicResolution
       value: 1
       objectReference: {fileID: 0}
     - target: {fileID: 11400000, guid: 126d619cf4daa52469682f85c1378b4a, type: 3}
